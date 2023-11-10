@@ -10,8 +10,21 @@ import warnings
 import copy
 import inspect
 
+# scipy.optimize.curve_fit() throws an exception when the optimizer exhausts the maximum allowed number of function
+# evaluations. Since we are demanding fairly narrow tolerance, reaching the maximum number of evaluations is not
+# necessarily fatal (it merely means that the actual tolerance is somewhat less than our default standard). So we would
+# like to deescalate the error to a warning and proceed. Unfortunately, I am unable to find a more elegant way of doing
+# it except by overriding the optimizer function that curve_fit() calls
+original_least_squares = scp.optimize._minpack_py.least_squares
+def least_squares_wrapper(*args, **kwargs):
+    res = original_least_squares(*args, **kwargs)
+    if (not res.success) and (res.status == 0):
+        warn('Optimizer failed to reach desired convergence after the maximum number ({}) of function evaluations'.format(res.nfev))
+        res.success = True
+    return res
+scp.optimize._minpack_py.least_squares = least_squares_wrapper
+
 script_dir = os.path.dirname(os.path.realpath(__file__))
-progress_indicator = lambda x: x
 
 warnings_stack = []
 warnings_messages = {}
