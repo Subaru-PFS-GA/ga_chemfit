@@ -1001,7 +1001,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     array_like
         Estimated continuum multiplier at each wavelength in `wl`
     """
-    mask = (flux >= 0.0) & (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
+    mask = (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
     for bad_continuum_range in settings['masks']['continuum']:
         bad_continuum_range_mask = ranges_to_mask(wl, [bad_continuum_range], False)
         # Check for potential edge effects and remove the affected region from the fit
@@ -1087,7 +1087,7 @@ def fit_model(wl, flux, ivar, cont, initial, priors, dof, errors, masks, interpo
     mask = np.full(len(wl), False)
     for param in dof:
         mask |= masks[param]
-    mask &= (flux >= 0.0) & (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
+    mask &= (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
     mask &= ~np.isnan(interpolator(initial))[1]
     wl = wl[mask]; flux = flux[mask]; ivar = ivar[mask]
 
