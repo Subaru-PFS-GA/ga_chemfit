@@ -218,6 +218,75 @@ def warn(message):
     if settings['throw_python_warnings']:
         warnings.warn(message)
 
+def safe_read_grid_model(params, grid):
+    """Wrapper for `read_grid_model()` that deescalates missing model errors to warnings, and
+    replaces the output with an interpolated result from adjacent models
+
+    When a requested model should be present in the model grid, but cannot be loaded from disk,
+    `read_grid_model()` throws `FileNotFoundError`. This function, instead, resolves the error
+    using the following algorithm:
+        - Find nearest models to the requested model along all grid lines in both directions
+        - If possible, take the axis with the smallest interval between the neighbors and
+          interpolate the result to the requested point
+        - If no grid line has neighbors on both sides of the requested point, carry out
+          nearest neighbor extrapolation along the axis with the closest neighbor
+        - If extrapolation is impossible either, raise `ValueError`
+
+    Note: this function is not designed for accuracy or efficiency. Any "proper" handling of
+    missing models should be carried out in the main interpolator. This function merely provides
+    a safe way to read models from disk
+
+    Parameters
+    ----------
+    params : dict
+        Same as in `read_grid_model()`
+    grid   : dict
+        Model grid dimensions, previously obtained with `read_grid_dimensions()`
+
+    Returns
+    -------
+    Same as in `read_grid_model()`
+    """
+    try:
+        return read_grid_model(params)
+    except FileNotFoundError:
+        # Find nearest neighbours along each axis in each of the two directions
+        neighbors = {}; neighbor_distances = {}; neighbor_positions = {}
+        for axis in params:
+            neighbors[axis] = [None, None]
+            neighbor_distances[axis] = [np.nan, np.nan]
+            neighbor_positions[axis] = [np.nan, np.nan]
+            for direction in [-1, 1]:
+                pos = (init_pos := np.where(np.sort(grid[axis]) == params[axis])[0][0]) + direction
+                while pos >= 0 and pos < len(grid[axis]):
+                    neighbor_params = copy.copy(params)
+                    neighbor_params[axis] = np.sort(grid[axis])[pos]
+                    try:
+                        neighbors[axis][int(direction > 0)] = read_grid_model(neighbor_params)
+                        neighbor_positions[axis][int(direction > 0)] = pos
+                        neighbor_distances[axis][int(direction > 0)] = pos - init_pos
+                        break
+                    except FileNotFoundError:
+                        pos += direction
+                        continue
+
+        # If possible, interpolate over the shortest interval
+        intervals = {axis: neighbor_positions[axis][1] - neighbor_positions[axis][0] for axis in params}
+        if not np.all(np.isnan(list(intervals.values()))):
+            shortest = min(intervals, key = lambda k: intervals[k] if not np.isnan(intervals[k]) else np.inf)
+            x = [np.sort(grid[shortest])[neighbor_positions[shortest][0]], np.sort(grid[shortest])[neighbor_positions[shortest][1]]]
+            warn('Cannot load model {}. Will interpolate from {}={},{}'.format(params, shortest, *x))
+            return tuple(scp.interpolate.interp1d(x, [neighbors[shortest][0][i], neighbors[shortest][1][i]], axis = 0)(params[shortest]) for i in range(len(neighbors[shortest][0])))
+        # Otherwise, extrapolate from the nearest neighbor
+        intervals = {axis: np.nanmin(neighbor_distances[axis]) for axis in params if (not np.all(np.isnan(neighbor_distances[axis])))}
+        if len(intervals) == 0: # None of the axes have viable models to interpolate or extrapolate
+            raise ValueError('Unable to safely load {}: no models on the same gridlines found'.format(params))
+        shortest = min(intervals, key = intervals.get)
+        direction = np.where(~np.isnan(neighbor_distances[shortest]))[0][0]
+        warn('Cannot load model {}. Will load {}={} instead'.format(params, shortest, grid[shortest][neighbor_positions[shortest][direction]]))
+        return neighbors[shortest][direction]
+
+
 def read_grid_model(params):
     """Load a specific model spectrum from the model grid
     
@@ -255,7 +324,7 @@ def read_grid_model(params):
         if not os.path.isfile(path := (template := '{}/{}/{}/t{}/g{}/{}').format(*cards)):
             cards[-1] = cards[-1].replace('a', 'a_00a')
             if not os.path.isfile(path := template.format(*cards)):
-                raise ValueError('Cannot locate {}'.format(path))
+                raise FileNotFoundError('Cannot locate {}'.format(path))
 
         # Load flux from the binary file
         f = gzip.open(path, 'rb')
@@ -889,7 +958,7 @@ class ModelGridInterpolator:
         for model in new_models:
             params = np.array(model.split('|')).astype(float)
             keys = sorted(list(x.keys()))
-            wl, flux = read_grid_model({keys[i]: params[i] for i in range(len(keys))})
+            wl, flux = safe_read_grid_model({keys[i]: params[i] for i in range(len(keys))}, self._grid)
             if self._resample:
                 wl, flux = simulate_observation(wl, flux, self._detector_wl)
             try:
