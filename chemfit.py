@@ -349,6 +349,12 @@ def read_grid_model(params):
 
     if not np.all(wl[1:] > wl[:-1]):
         raise ValueError('Model wavelengths out of order')
+
+    # Some of GridIE models have spurious spikes in the flux which may even be infinite
+    if np.max(flux) > 100:
+        flux[flux > 100] = 1.0
+        warn('Unphysical flux values in model {} replaced with unity'.format(params))
+
     return wl, flux
 
 def read_grid_dimensions(flush_cache = False):
