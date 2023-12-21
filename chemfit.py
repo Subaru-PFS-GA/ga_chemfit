@@ -165,9 +165,8 @@ settings = {
         'continuum': [[6864, 6935], [7591, 7694], [8938, 9100]],
     },
 
-    ### Fitting sequence ###
-    'continuum': [['zscale', 'alpha', 'teff', 'logg']],
-    'redeterminations': [],#['zscale', 'alpha', 'zscale'],
+    ### Which parameters to fit? ###
+    'fit_dof': ['zscale', 'alpha', 'teff', 'logg'],
 
     ### Optimization parameters ###
     'curve_fit': {
@@ -176,7 +175,7 @@ settings = {
         'gtol': 1e-10,
         'xtol': 1e-10,
     },
-    'cont_pix_refined': 100,
+    'cont_pix': 100,
     'spline_order': 3,
     'cont_maxiter': 500,
 
@@ -1092,7 +1091,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     spline = scp.interpolate.splrep(wl[mask], flux[mask], w = ivar[mask], t = t, k = k)
     return scp.interpolate.splev(wl, spline)
 
-def fit_model(wl, flux, ivar, cont, initial, priors, dof, errors, masks, interpolator):
+def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator):
     """Fit the model to the spectrum
     
     Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
@@ -1109,9 +1108,6 @@ def fit_model(wl, flux, ivar, cont, initial, priors, dof, errors, masks, interpo
         Spectrum flux densities
     ivar : array_like
         Spectrum weights (inverted variances)
-    cont : array_like
-        Continuum multiplier. The model flux density is obtained by multiplying the output of the model
-        interpolator and this factor
     initial : dict
         Initial guesses for the stellar parameters, keyed by parameter. The updated parameters after the
         optimization are stored in this dictionary as well
@@ -1137,11 +1133,12 @@ def fit_model(wl, flux, ivar, cont, initial, priors, dof, errors, masks, interpo
 
     # This function will be passed to curve_fit() as the model callback. The <signature> comment is a placeholder
     # to be replaced with the interpretation of the function signature later
-    def f(data_wl, params, mask, cont = cont, priors = priors, interpolator = interpolator):
+    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator):
         # <signature>
 
         # Load the requested model
         model_wl, model_flux = interpolator(params)
+        cont = estimate_continuum(data_wl, data_flux / model_flux, data_ivar * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
         model_wl = model_wl[mask]; model_flux = (cont * model_flux)[mask]
 
         # Add priors
@@ -1164,7 +1161,7 @@ def fit_model(wl, flux, ivar, cont, initial, priors, dof, errors, masks, interpo
         mask |= masks[param]
     mask &= (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
     mask &= ~np.isnan(interpolator(initial))[1]
-    wl = wl[mask]; flux = flux[mask]; ivar = ivar[mask]
+    x = wl[mask]; y = flux[mask]; sigma = ivar[mask] ** -0.5
 
     # Since we do not a priori know the number of parameters being fit, we need to dynamically update the signature of the
     # model callback, f(). Unfortunately, there appears to be no better way to do that than by retrieving the source code
@@ -1173,7 +1170,7 @@ def fit_model(wl, flux, ivar, cont, initial, priors, dof, errors, masks, interpo
     f[0] = f[0].replace('params', ', '.join(dof))
     f[0] = f[0].replace('mask', 'mask = mask')
     f[1] = f[1].replace('# <signature>', 'params = {' + ', '.join(['\'{}\': {}'.format(param, [param, initial[param]][param not in dof]) for param in initial]) + '}')
-    scope = {'priors': priors, 'interpolator': interpolator, 'mask': mask, 'np': np, 'cont': cont}
+    scope = {'priors': priors, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings}
     exec('\n'.join(f)[f[0].find('def'):], scope)
     f = scope['f']
 
@@ -1181,13 +1178,13 @@ def fit_model(wl, flux, ivar, cont, initial, priors, dof, errors, masks, interpo
     index = 1
     for param in sorted(list(priors.keys())):
         if len(np.atleast_1d(priors[param])) == 2:
-            wl = np.concatenate([np.array([-index]), wl])
-            flux = np.concatenate([np.array([priors[param][0]]), flux])
-            ivar = np.concatenate([np.array([priors[param][1] ** -2.0]), ivar])
+            x = np.concatenate([np.array([-index]), x])
+            y = np.concatenate([np.array([priors[param][0]]), y])
+            sigma = np.concatenate([np.array([priors[param][1]]), sigma])
             index += 1
 
     # Run the optimizer and save the results in "initial" and "errors"
-    fit = scp.optimize.curve_fit(f, wl, flux, p0 = p0, bounds = bounds, sigma = ivar ** -0.5, **settings['curve_fit'])
+    fit = scp.optimize.curve_fit(f, x, y, p0 = p0, bounds = bounds, sigma = sigma, **settings['curve_fit'])
     for i, param in enumerate(dof):
         initial[param] = fit[0][i]
         errors[param] = np.sqrt(fit[1][i,i])
@@ -1215,18 +1212,18 @@ def chemfit(wl, flux, ivar, initial):
     -------
     dict
         Fitting results. Dictionary with the following keys:
-            'fit': Final best-fit stellar parameters
+            'fit': Best-fit stellar parameters
             'errors': Standard errors in the best-fit parameters from the diagonal of covariance matrix
-            'cov': Covariance matrix from the last optimizer call. This would be based on the final
-                   redetermination fit if enabled, or the last step of the continuum iteration
-            'cont': Best-fit continuum multiplier for the combined wavelength array (see `combine_arms()`)
-            'niter': Total number of continuum iterations carried out
+            'cov': Full covariance matrix, ordered by `settings['fit_dof']`
             'interpolator_statistics': Interpolator statistics (see `ModelGridInterpolator().statistics`)
             'warnings': Warnings issued during the fitting process
     """
     # Combine arms
     wl_combined, flux_combined = combine_arms(wl, flux)
     ivar_combined = combine_arms(wl, ivar)[1]
+
+    # Build the interpolator and resampler
+    interpolator = ModelGridInterpolator(detector_wl = wl)
 
     # Get the fitting masks for each parameter
     masks = {}
@@ -1244,47 +1241,21 @@ def chemfit(wl, flux, ivar, initial):
             if ('all' in settings['masks']) and ('all' in settings['masks']['all']):
                 ranges_general += list(settings['masks']['all']['all'])
         masks[param] = ranges_to_mask(wl_combined, ranges_specific) & ranges_to_mask(wl_combined, ranges_general)
+    # Run the continuum fitter once to give it a chance to update the fitting masks if it needs to
+    cont = estimate_continuum(wl_combined, flux_combined, ivar_combined, npix = settings['cont_pix'], k = settings['spline_order'], masks = masks)
 
     # Preliminary setup
-    interpolator = ModelGridInterpolator(detector_wl = wl)                     # Build the interpolator and resampler
-    priors = copy.deepcopy(initial)                                            # We will update "initial" to have the initial parameters at each continuum iteration.
-                                                                               # Make a copy of the true initial parameters
-    initial = {param: np.atleast_1d(initial[param])[0] for param in priors}    # Initial parameters do not need uncertainties
+    fit = {param: np.atleast_1d(initial[param])[0] for param in initial}       # Initial guesses for the fitter
     errors = {}                                                                # Placeholder for fitting errors
     warnings_stack_length = len(warnings_stack)                                # Remember the length of pre-existing warnings stack
 
-    # Begin continuum iterations
-    niter = 0
-    while True:
 
-        fit = copy.deepcopy(initial)
-
-        # Get a continuum estimate as spline fit to observed/model, i.e. our definition of continuum is the spline-smoothened fitting residual
-        model_wl, model_flux = interpolator(fit)
-        cont = estimate_continuum(wl_combined, flux_combined / model_flux, ivar_combined * model_flux ** 2, npix = settings['cont_pix_refined'], k = settings['spline_order'], masks = (None, masks)[niter == 0])
-
-        # Run the main fitter
-        for dof in settings['continuum']:
-            cov = fit_model(wl_combined, flux_combined, ivar_combined, cont, fit, priors, np.atleast_1d(dof), errors, masks, interpolator)
-
-        # Evaluate convergence
-        niter += 1
-        converged = [np.abs(initial[param] - fit[param]) < settings['thresholds'][param] for param in settings['thresholds']]
-        if np.all(converged):
-            break
-        else:
-            initial = copy.deepcopy(fit)
-        if niter >= settings['cont_maxiter']:
-            warn('Maximum number of continuum iterations reached without satisfying the convergence target')
-            break
-
-    # Run the redetermination cycle
-    for dof in settings['redeterminations']:
-        cov = fit_model(wl_combined, flux_combined, ivar_combined, cont, fit, priors, np.atleast_1d(dof), errors, masks, interpolator)
+    # Run the main fitter
+    cov = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator)
 
     # Get the texts of unique issued warnings
     warnings = np.unique(warnings_stack[warnings_stack_length:])
     inv_warnings_messages = {warnings_messages[key]: key for key in warnings_messages}
     warnings = [inv_warnings_messages[warning_id] for warning_id in warnings]
 
-    return {'fit': fit, 'errors': errors, 'cov': cov, 'cont': cont, 'niter': niter, 'interpolator_statistics': interpolator.statistics, 'warnings': warnings}
+    return {'fit': fit, 'errors': errors, 'cov': cov, 'interpolator_statistics': interpolator.statistics, 'warnings': warnings}
