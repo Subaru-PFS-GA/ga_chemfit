@@ -175,17 +175,8 @@ settings = {
         'gtol': 1e-10,
         'xtol': 1e-10,
     },
-    'cont_pix': 100,
+    'cont_pix': 165,
     'spline_order': 3,
-    'cont_maxiter': 500,
-
-    ### Continuum iteration thersholds ###
-    'thresholds': {
-        'teff': 1e-3,
-        'zscale': 1e-9,
-        'logg': 1e-9,
-        'alpha': 1e-9,
-    },
 
     ### Warnings ###
     'throw_python_warnings': True,
