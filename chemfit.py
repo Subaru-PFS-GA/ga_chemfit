@@ -1209,6 +1209,9 @@ def chemfit(wl, flux, ivar, initial):
             'interpolator_statistics': Interpolator statistics (see `ModelGridInterpolator().statistics`)
             'warnings': Warnings issued during the fitting process
     """
+    # Remember the length of pre-existing warnings stack
+    warnings_stack_length = len(warnings_stack)
+
     # Combine arms
     wl_combined, flux_combined = combine_arms(wl, flux)
     ivar_combined = combine_arms(wl, ivar)[1]
@@ -1231,14 +1234,15 @@ def chemfit(wl, flux, ivar, initial):
                 ranges_general += list(settings['masks'][arm]['all'])
             if ('all' in settings['masks']) and ('all' in settings['masks']['all']):
                 ranges_general += list(settings['masks']['all']['all'])
-        masks[param] = ranges_to_mask(wl_combined, ranges_specific) & ranges_to_mask(wl_combined, ranges_general)
+        masks[param] = ranges_to_mask(wl_combined, ranges_general)
+        if len(ranges_specific) != 0:
+            masks[param] &= ranges_to_mask(wl_combined, ranges_specific)
     # Run the continuum fitter once to give it a chance to update the fitting masks if it needs to
     cont = estimate_continuum(wl_combined, flux_combined, ivar_combined, npix = settings['cont_pix'], k = settings['spline_order'], masks = masks)
 
     # Preliminary setup
     fit = {param: np.atleast_1d(initial[param])[0] for param in initial}       # Initial guesses for the fitter
     errors = {}                                                                # Placeholder for fitting errors
-    warnings_stack_length = len(warnings_stack)                                # Remember the length of pre-existing warnings stack
 
 
     # Run the main fitter
@@ -1250,3 +1254,36 @@ def chemfit(wl, flux, ivar, initial):
     warnings = [inv_warnings_messages[warning_id] for warning_id in warnings]
 
     return {'fit': fit, 'errors': errors, 'cov': cov, 'interpolator_statistics': interpolator.statistics, 'warnings': warnings}
+
+def best_fit(fit, wl, flux, ivar):
+    """Generate the best-fit model spectrum based on its best-fit parameters determined with `chemfit()`
+    
+    The purpose of the function is to provide quick access to the combined observed spectrum of the star
+    and the estimated best-fit model spectrum, e.g., for plotting
+    
+    Parameters
+    ----------
+    fit : dict
+        Output of `chemfit()`
+    wl : dict
+        Spectrum wavelengths keyed by spectrograph arm, as they were provided to `chemfit()`
+    flux : dict
+        Spectrum flux densities keyed by spectrograph arm, as they were provided to `chemfit()`
+    ivar : dict
+        Spectrum weights (inverted variances) keyed by spectrograph arm, as they were provided to `chemfit()`
+    
+    Returns
+    -------
+    observed : dict
+        Combined observed spectrum of the star. The keys are 'wl' (wavelength), 'flux' (observed flux),
+        'ivar' (observation weights)
+    model : dict
+        Best-fit model spectrum. The keys are 'wl' (wavelength, same as for the observed spectrum), 'flux'
+        (continuum-normalized model flux), 'cont' (continuum multiplier)
+    """
+    interpolator = ModelGridInterpolator(detector_wl = wl)
+    model_wl, model_flux = interpolator(fit['fit'])
+    wl_combined, flux_combined = combine_arms(wl, flux)
+    ivar_combined = combine_arms(wl, ivar)[1]
+    cont = estimate_continuum(wl_combined, flux_combined / model_flux, ivar_combined * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
+    return {'wl': wl_combined, 'flux': flux_combined, 'ivar': ivar_combined}, {'wl': model_wl, 'cont': cont, 'flux': model_flux}
