@@ -1082,7 +1082,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     spline = scp.interpolate.splrep(wl[mask], flux[mask], w = ivar[mask], t = t, k = k)
     return scp.interpolate.splev(wl, spline)
 
-def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator):
+def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, get_mask = False):
     """Fit the model to the spectrum
     
     Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
@@ -1152,6 +1152,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
         mask |= masks[param]
     mask &= (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
     mask &= ~np.isnan(interpolator(initial))[1]
+    if get_mask: return mask
     x = wl[mask]; y = flux[mask]; sigma = ivar[mask] ** -0.5
 
     # Since we do not a priori know the number of parameters being fit, we need to dynamically update the signature of the
@@ -1181,7 +1182,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
         errors[param] = np.sqrt(fit[1][i,i])
     return fit[1]
 
-def chemfit(wl, flux, ivar, initial):
+def chemfit(wl, flux, ivar, initial, get_mask = False):
     """Determine the stellar parameters of a star given its spectrum
     
     Parameters
@@ -1246,6 +1247,7 @@ def chemfit(wl, flux, ivar, initial):
 
 
     # Run the main fitter
+    if get_mask: return fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator, get_mask = True)
     cov = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator)
 
     # Get the texts of unique issued warnings
@@ -1286,4 +1288,4 @@ def best_fit(fit, wl, flux, ivar):
     wl_combined, flux_combined = combine_arms(wl, flux)
     ivar_combined = combine_arms(wl, ivar)[1]
     cont = estimate_continuum(wl_combined, flux_combined / model_flux, ivar_combined * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
-    return {'wl': wl_combined, 'flux': flux_combined, 'ivar': ivar_combined}, {'wl': model_wl, 'cont': cont, 'flux': model_flux}
+    return {'wl': wl_combined, 'flux': flux_combined, 'ivar': ivar_combined}, {'wl': model_wl, 'cont': cont, 'flux': model_flux}, chemfit(wl, flux, ivar, fit['fit'], True)
