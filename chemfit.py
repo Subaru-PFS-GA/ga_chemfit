@@ -297,55 +297,22 @@ def read_grid_model(params):
     flux : array_like
         Corresponding continuum-normalized flux densities
     """
-    wl = np.array([], dtype = float)
-    flux = np.array([], dtype = float)
+    atlas = {
+        'zscale': [-2.1, -2.0, -1.9, -1.8, -1.7, -1.6, -1.5, -1.4, -1.3],
+        'alpha': [-0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
+    }
+    num = 0
+    for zscale in atlas['zscale']:
+        for alpha in atlas['alpha']:
+            num += 1
+            if zscale == params['zscale'] and alpha == params['alpha']:
+                index = num
 
-    # Load the blue synthetic spectrum, then the red one
-    for blue_or_red in [True, False]:
-
-        # Determine the path to the file containing the spectrum
-        subgrid_dir = ['grid7', 'gridie'][int(blue_or_red)]
-        params_formatted = {}
-        for param in ['logg', 'zscale', 'alpha']:
-            params_formatted[param] = ['_', '-'][int(params[param] < 0)] + '{:02d}'.format(int(np.round(np.abs(params[param]) * 10)))
-        params_formatted['teff'] = int(params['teff'])
-        filename = 't{teff}g{logg}f{zscale}a{alpha}.bin.gz'.format(**params_formatted)
-        cards = [settings['griddir'], subgrid_dir, 'bin', params_formatted['teff'], params_formatted['logg'], filename]
-        if not os.path.isfile(path := (template := '{}/{}/{}/t{}/g{}/{}').format(*cards)):
-            cards[-1] = cards[-1].replace('a', 'a_00a')
-            if not os.path.isfile(path := template.format(*cards)):
-                raise FileNotFoundError('Cannot locate {}'.format(path))
-
-        # Load flux from the binary file
-        f = gzip.open(path, 'rb')
-        file_flux = 1.0 - np.frombuffer(f.read(), dtype = np.float32)
-        f.close()
-
-        # Generate the corresponding wavelengths based on some hard-coded parameters
-        step = 0.14
-        if blue_or_red:
-            start = 4100
-            stop = 6300
-        else:
-            start = 6300
-            stop = 9100
-        file_wl = np.arange(start, stop + step, step)
-        file_wl = file_wl[file_wl <= stop + step * 0.1]
-        if len(file_wl) != len(file_flux):
-            raise ValueError('Unexpected number of points in {}'.format(path))
-
-        wl = np.concatenate([wl, file_wl])
-        flux = np.concatenate([flux, file_flux])
-
-    if not np.all(wl[1:] > wl[:-1]):
-        raise ValueError('Model wavelengths out of order')
-
-    # Some of GridIE models have spurious spikes in the flux which may even be infinite
-    if np.max(flux) > 100:
-        flux[flux > 100] = 1.0
-        warn('Unphysical flux values in model {} replaced with unity'.format(params))
-
-    return wl, flux
+    import atlas
+    spectrum = atlas.read_spectrum('/ocean/projects/phy220039p/romang/scratch/n{id:02d}/ATLAS/n{id:02d}_{teff:.0f}_{logg}'.format(id = index, teff = params['teff'], logg = params['logg']))
+    from PyAstronomy import pyasl
+    c = (spectrum['wl'] > 3000) & (spectrum['wl'] < 16900)
+    return pyasl.vactoair2(spectrum['wl'][c]), spectrum['line'][c]
 
 def read_grid_dimensions(flush_cache = False):
     """Determine the available dimensions in the model grid and the grid points
@@ -368,33 +335,14 @@ def read_grid_dimensions(flush_cache = False):
         Dictionary of lists, keyed be grid axis names. The lists contain unique
         values along the corresponding axis that are available in the grid
     """
-    # Apply caching
-    if os.path.isfile(cache := (settings['griddir'] + '/cache.pkl')) and (not flush_cache):
-        f = open(cache, 'rb')
-        grid = pickle.load(f)
-        f.close()
-        return grid
-
-    # Grid7 only has four dimensions: Teff, log(g), [M/H] and [alpha/M]
-    grid = {'teff': [], 'logg': [], 'zscale': [], 'alpha': []}
-
-    # Recursively collect and parse the filenames of all *.bin.gz models
-    for root, subdirs, files in os.walk(settings['griddir']):
-        for file in files:
-            if file[-7:].lower() == '.bin.gz':
-                breakdown = list(re.findall('t([0-9]{4})g([_-][0-9]{2})f([_-][0-9]{2})a([_-][0-9]{2})\.', file.replace('a_00a', 'a'))[0])
-                breakdown[0] = int(breakdown[0])
-                for i in range(1, 4):
-                    breakdown[i] = np.round(float(breakdown[i].replace('_', '')) / 10.0, 1)
-                grid['teff'] += [breakdown[0]]
-                grid['logg'] += [breakdown[1]]
-                grid['zscale'] += [breakdown[2]]
-                grid['alpha'] += [breakdown[3]]
-
-    grid = {axis: np.unique(grid[axis]) for axis in grid}
-    f = open(cache, 'wb')
-    pickle.dump(grid, f)
-    f.close()
+    grid = {
+        'teff': [4800, 5000, 5200, 5400, 5600],
+        'logg': [2, 2.5, 3, 3.5],
+        'zscale': [-2.1, -2.0, -1.9, -1.8, -1.7, -1.6, -1.5, -1.4, -1.3],
+        'alpha': [-0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
+    }
+    for param in grid:
+        grid[param] = np.array(grid[param])
     return grid
 
 def convolution_integral(sigma, segment_left, segment_right, bin_left, bin_right):
