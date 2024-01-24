@@ -30,6 +30,11 @@ warnings_stack = []
 warnings_messages = {}
 
 settings = {
+    ### Synthetic photometry ###
+    'filter_dir': script_dir + '/bands/',          # Path to the transmission profile directory
+    'default_mag_system': 'VEGAMAG',               # Default magnitude system
+    'default_reddening': 0.0,                      # Default E(B-V)
+
     ### Model grid settings ###
     'griddir': script_dir + '/../evan_models/',    # Path to the grid directory (must have grid7/bin and gridie/bin subdirectories)
 
@@ -344,6 +349,12 @@ def read_grid_model(params):
     if np.max(flux) > 100:
         flux[flux > 100] = 1.0
         warn('Unphysical flux values in model {} replaced with unity'.format(params))
+
+    ############ Slap fake continua onto the model spectra
+    import scipy.constants as spc
+    bb = 2 * spc.h * spc.c ** 2.0 / (wl * 1e-10) ** 5 * (np.exp(spc.h * spc.c / ((wl * 1e-10) * spc.k * params['teff'])) - 1) ** -1
+    return wl, flux * bb
+    ############
 
     return wl, flux
 
@@ -1082,7 +1093,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     spline = scp.interpolate.splrep(wl[mask], flux[mask], w = ivar[mask], t = t, k = k)
     return scp.interpolate.splev(wl, spline)
 
-def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator):
+def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, phot):
     """Fit the model to the spectrum
     
     Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
@@ -1116,6 +1127,13 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
         logically added (or)
     interpolator : ModelGridInterpolator
         Model grid interpolator object that will be used to construct models during optimization
+    phot : dict
+        Photometric colors of the star. Each color is keyed by `BAND1-BAND2`, where `BAND1` and `BAND2` are
+        the transmission profile filenames of the filters, as required by `synphot()`. Each element is a
+        2-element tuple, where the first element is the measured color, and the second element is the
+        uncertainty in the measurement. The dictionary may also include optional elements `reddening`
+        (E(B-V), single numerical value,), and `mag_system` (one of the magnitude systems supported by
+        `synphot()`, single string)
     Returns
     -------
     array_like
@@ -1124,13 +1142,13 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
 
     # This function will be passed to curve_fit() as the model callback. The <signature> comment is a placeholder
     # to be replaced with the interpretation of the function signature later
-    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator):
+    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator, phot = phot):
         # <signature>
 
         # Load the requested model
         model_wl, model_flux = interpolator(params)
         cont = estimate_continuum(data_wl, data_flux / model_flux, data_ivar * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
-        model_wl = model_wl[mask]; model_flux = (cont * model_flux)[mask]
+        model_wl = model_wl[mask]; model_flux_uncorrected = model_flux[mask]; model_flux = (cont * model_flux)[mask]
 
         # Add priors
         index = 1
@@ -1140,6 +1158,34 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
                 model_flux = np.concatenate([np.array([params[param]]), model_flux])
                 index += 1
 
+        # Add photometric colors
+        if 'reddening' in phot:
+            reddening = phot['reddening']
+        else:
+            reddening = settings['default_reddening']
+        if 'mag_system' in phot:
+            mag_system = phot['mag_system']
+        else:
+            mag_system = settings['default_mag_system']
+        bands = []
+        for color in phot.keys():
+            color_bands = color.split('-')
+            if len(color_bands) != 2:
+                continue
+            bands += color_bands
+        bands = set(bands)
+        model_phot = synphot(model_wl, model_flux_uncorrected, params['teff'], bands, mag_system = mag_system, reddening = reddening)
+        for color in sorted(list(phot.keys())):
+            color_bands = color.split('-')
+            if len(color_bands) != 2:
+                continue
+            if np.isnan(model_phot[color_bands[0]]) or np.isnan(model_phot[color_bands[1]]):
+                raise ValueError('Could not calculate synthetic color {} for model {}'.format(color, params))
+            model_wl = np.concatenate([np.array([-index * 100]), model_wl])
+            model_flux = np.concatenate([np.array([model_phot[color_bands[1]] - model_phot[color_bands[0]]]), model_flux])
+            index += 1
+
+        print(model_flux[0])
         return model_flux
 
     # Define p0 and bounds. The bounds are set to the model grid range stored in the interpolator object
@@ -1161,7 +1207,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
     f[0] = f[0].replace('params', ', '.join(dof))
     f[0] = f[0].replace('mask', 'mask = mask')
     f[1] = f[1].replace('# <signature>', 'params = {' + ', '.join(['\'{}\': {}'.format(param, [param, initial[param]][param not in dof]) for param in initial]) + '}')
-    scope = {'priors': priors, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings}
+    scope = {'priors': priors, 'phot': phot, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings, 'synphot': synphot}
     exec('\n'.join(f)[f[0].find('def'):], scope)
     f = scope['f']
 
@@ -1174,6 +1220,16 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
             sigma = np.concatenate([np.array([priors[param][1]]), sigma])
             index += 1
 
+    # Add photometric colors
+    for color in sorted(list(phot.keys())):
+        color_bands = color.split('-')
+        if len(color_bands) != 2:
+            continue
+        x = np.concatenate([np.array([-index * 100]), x])
+        y = np.concatenate([np.array([phot[color][0]]), y])
+        sigma = np.concatenate([np.array([phot[color][1]]), sigma])
+        index += 1
+
     # Run the optimizer and save the results in "initial" and "errors"
     fit = scp.optimize.curve_fit(f, x, y, p0 = p0, bounds = bounds, sigma = sigma, **settings['curve_fit'])
     for i, param in enumerate(dof):
@@ -1181,7 +1237,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
         errors[param] = np.sqrt(fit[1][i,i])
     return fit[1]
 
-def chemfit(wl, flux, ivar, initial):
+def chemfit(wl, flux, ivar, initial, phot = {}):
     """Determine the stellar parameters of a star given its spectrum
     
     Parameters
@@ -1198,6 +1254,15 @@ def chemfit(wl, flux, ivar, initial):
         2-element tuple. In the former case, the value is treated as the initial guess to the
         fitter. Otherwise, the first element is treated as an initial guess and the second value
         is treated as the prior uncertainty in the parameter
+    phot : dict, optional
+        Photometric colors of the star (if available). The colors and the spectrum will be fit to
+        the models simultaneously to attain stricter constraints on the stellar parameters. Each
+        color is keyed by `BAND1-BAND2`, where `BAND1` and `BAND2` are the transmission profile
+        filenames of the filters, as required by `synphot()`. Each element is a 2-element tuple,
+        where the first element is the measured color, and the second element is the uncertainty
+        in the measurement. The dictionary may also include optional elements `reddening` (E(B-V),
+        single numerical value), and `mag_system` (one of the magnitude systems supported by
+        `synphot()`, single string)
     
     Returns
     -------
@@ -1246,7 +1311,7 @@ def chemfit(wl, flux, ivar, initial):
 
 
     # Run the main fitter
-    cov = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator)
+    cov = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator, phot)
 
     # Get the texts of unique issued warnings
     warnings = np.unique(warnings_stack[warnings_stack_length:])
@@ -1287,3 +1352,9 @@ def best_fit(fit, wl, flux, ivar):
     ivar_combined = combine_arms(wl, ivar)[1]
     cont = estimate_continuum(wl_combined, flux_combined / model_flux, ivar_combined * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
     return {'wl': wl_combined, 'flux': flux_combined, 'ivar': ivar_combined}, {'wl': model_wl, 'cont': cont, 'flux': model_flux}
+
+def synphot(wl, flux, teff, bands, mag_system = settings['default_mag_system'], reddening = settings['default_reddening']):
+    import atlas
+    band_filenames = list(map(lambda fn: settings['filter_dir'] + '/' + fn, bands))
+    phot = atlas.synphot(None, mag_system, reddening, band_filenames, spectrum = {'wl': wl, 'flux': flux, 'teff': teff}, silent = True)
+    return {os.path.basename(key): phot[key] for key in phot}
