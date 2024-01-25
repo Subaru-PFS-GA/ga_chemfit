@@ -880,7 +880,7 @@ class ModelGridInterpolator:
             'num_interpolators_built': Total number of interpolator objects constructed
                                        (scipy.interpolate.RegularGridInterpolator)
     """
-    def __init__(self, resample = True, detector_wl = None, max_models = 1000):
+    def __init__(self, resample = True, detector_wl = None, synphot_bands = [], mag_system = settings['default_mag_system'], reddening = settings['default_reddening'], max_models = 1000):
         """
         Parameters
         ----------
@@ -897,6 +897,14 @@ class ModelGridInterpolator:
             identifiers and the "typical" wavelength sampling for each arm (as defined in
             `settings.arms`) will be assumed. Alternatively, set to `None` to use all
             arms defined in `settings.arms` with "typical" wavelength sampling
+        synphot_bands : list, optional
+            If synthetic photometry for the interpolated models is required, provide the desired
+            colors as elements of this list. Each color must be a 2-element tuple with the
+            filenames of the bluer and redder filters in the `settings['filter_dir']` directory
+        mag_system : str, optional
+            Magnitude system to use for synthetic photometry. Must be supported by `synphot()`
+        reddening : float, optional
+            Optical reddening parameter (E(B-V)) to use for synthetic photometry
         max_models : int, optional
             Maximum number of models to keep in the loaded models cache. If exceeded, the
             models loaded earliest will be removed from the cache. Higher numbers lead to
@@ -921,6 +929,11 @@ class ModelGridInterpolator:
 
         # Models embedded into the current interpolator
         setattr(self, '_interpolator_models', set())
+
+        # Synthetic photometry parameters
+        setattr(self, '_synphot_bands', synphot_bands)
+        setattr(self, '_mag_system', mag_system)
+        setattr(self, '_reddening', reddening)
 
         # Holders of statistical information
         setattr(self, 'statistics', {'num_models_used': 0, 'num_models_loaded': 0, 'num_interpolations': 0, 'num_interpolators_built': 0})
@@ -965,14 +978,28 @@ class ModelGridInterpolator:
         for model in new_models:
             params = np.array(model.split('|')).astype(float)
             keys = sorted(list(x.keys()))
-            wl, flux = safe_read_grid_model({keys[i]: params[i] for i in range(len(keys))}, self._grid)
+            params = {keys[i]: params[i] for i in range(len(keys))}
+            wl, flux = safe_read_grid_model(params, self._grid)
+
+            # Carry out synthetic photometry
+            colors = np.zeros(len(self._synphot_bands))
+            if len(self._synphot_bands) != 0:
+                if 'teff' not in params:
+                    raise ValueError('The model grid must have "teff" as one of the axes to compute synthetic photometry')
+                phot = synphot(wl, flux, params['teff'], np.unique(self._synphot_bands), mag_system = self._mag_system, reddening = self._reddening)
+                for i, color in enumerate(self._synphot_bands):
+                    if np.isnan(phot[color[0]]) or np.isnan(phot[color[1]]):
+                        raise ValueError('Could not calculate synthetic color {} for model {}'.format(color, params))
+                    # Note that the order of bands is reversed in the color calculation, since synphot() returns bolometric corrections, not magnitudes
+                    colors[i] = phot[color[1]] - phot[color[0]]
+
             if self._resample:
                 wl, flux = simulate_observation(wl, flux, self._detector_wl)
             try:
                 self._wl
             except:
                 setattr(self, '_wl', wl)
-            self._loaded[model] = flux
+            self._loaded[model] = np.concatenate([colors, flux]) # Prepend photometry to fluxes, so they are interpolated at the same time
             self._loaded_ordered += [model]
         self.statistics['num_models_loaded'] += len(new_models)
 
@@ -1001,10 +1028,17 @@ class ModelGridInterpolator:
         flux : array_like
             Interpolated continuum-normalized flux densities corresponding to the wavelengths
             in `wl`
+        phot : array_like
+            If requested (i.e. if `synphot_bands` is not empty), synthetic colors for the bands
+            listed in `synphot_bands` with the desired reddening in the desired magnitude system
         """
         self.statistics['num_interpolations'] += 1
         interpolator = self._build_interpolator(params)
-        return self._wl, interpolator([params[key] for key in sorted(list(params.keys()))])[0]
+        result = interpolator([params[key] for key in sorted(list(params.keys()))])[0]
+        if len(self._synphot_bands) != 0:
+            return self._wl, result[len(self._synphot_bands):], result[:len(self._synphot_bands)]
+        else:
+            return self._wl, result
 
     def __call__(self, params):
         return self.interpolate(params)
@@ -1128,7 +1162,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
     interpolator : ModelGridInterpolator
         Model grid interpolator object that will be used to construct models during optimization
     phot : dict
-        Photometric colors of the star. Each color is keyed by `BAND1-BAND2`, where `BAND1` and `BAND2` are
+        Photometric colors of the star. Each color is keyed by `BAND1#BAND2`, where `BAND1` and `BAND2` are
         the transmission profile filenames of the filters, as required by `synphot()`. Each element is a
         2-element tuple, where the first element is the measured color, and the second element is the
         uncertainty in the measurement. The dictionary may also include optional elements `reddening`
@@ -1146,9 +1180,12 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
         # <signature>
 
         # Load the requested model
-        model_wl, model_flux = interpolator(params)
+        if len(interpolator._synphot_bands) != 0:
+            model_wl, model_flux, model_phot = interpolator(params)
+        else:
+            model_wl, model_flux = interpolator(params)
         cont = estimate_continuum(data_wl, data_flux / model_flux, data_ivar * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
-        model_wl = model_wl[mask]; model_flux_uncorrected = model_flux[mask]; model_flux = (cont * model_flux)[mask]
+        model_wl = model_wl[mask]; model_flux = (cont * model_flux)[mask]
 
         # Add priors
         index = 1
@@ -1159,30 +1196,9 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
                 index += 1
 
         # Add photometric colors
-        if 'reddening' in phot:
-            reddening = phot['reddening']
-        else:
-            reddening = settings['default_reddening']
-        if 'mag_system' in phot:
-            mag_system = phot['mag_system']
-        else:
-            mag_system = settings['default_mag_system']
-        bands = []
-        for color in phot.keys():
-            color_bands = color.split('-')
-            if len(color_bands) != 2:
-                continue
-            bands += color_bands
-        bands = set(bands)
-        model_phot = synphot(model_wl, model_flux_uncorrected, params['teff'], bands, mag_system = mag_system, reddening = reddening)
-        for color in sorted(list(phot.keys())):
-            color_bands = color.split('-')
-            if len(color_bands) != 2:
-                continue
-            if np.isnan(model_phot[color_bands[0]]) or np.isnan(model_phot[color_bands[1]]):
-                raise ValueError('Could not calculate synthetic color {} for model {}'.format(color, params))
+        for i, color in enumerate(interpolator._synphot_bands):
             model_wl = np.concatenate([np.array([-index * 100]), model_wl])
-            model_flux = np.concatenate([np.array([model_phot[color_bands[1]] - model_phot[color_bands[0]]]), model_flux])
+            model_flux = np.concatenate([np.array([model_phot[i]]), model_flux])
             index += 1
 
         print(model_flux[0])
@@ -1197,7 +1213,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
     for param in dof:
         mask |= masks[param]
     mask &= (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
-    mask &= ~np.isnan(interpolator(initial))[1]
+    mask &= ~np.isnan(interpolator(initial)[1])
     x = wl[mask]; y = flux[mask]; sigma = ivar[mask] ** -0.5
 
     # Since we do not a priori know the number of parameters being fit, we need to dynamically update the signature of the
@@ -1221,10 +1237,8 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
             index += 1
 
     # Add photometric colors
-    for color in sorted(list(phot.keys())):
-        color_bands = color.split('-')
-        if len(color_bands) != 2:
-            continue
+    for color in interpolator._synphot_bands:
+        color = '#'.join(color)
         x = np.concatenate([np.array([-index * 100]), x])
         y = np.concatenate([np.array([phot[color][0]]), y])
         sigma = np.concatenate([np.array([phot[color][1]]), sigma])
@@ -1257,7 +1271,7 @@ def chemfit(wl, flux, ivar, initial, phot = {}):
     phot : dict, optional
         Photometric colors of the star (if available). The colors and the spectrum will be fit to
         the models simultaneously to attain stricter constraints on the stellar parameters. Each
-        color is keyed by `BAND1-BAND2`, where `BAND1` and `BAND2` are the transmission profile
+        color is keyed by `BAND1#BAND2`, where `BAND1` and `BAND2` are the transmission profile
         filenames of the filters, as required by `synphot()`. Each element is a 2-element tuple,
         where the first element is the measured color, and the second element is the uncertainty
         in the measurement. The dictionary may also include optional elements `reddening` (E(B-V),
@@ -1282,7 +1296,16 @@ def chemfit(wl, flux, ivar, initial, phot = {}):
     ivar_combined = combine_arms(wl, ivar)[1]
 
     # Build the interpolator and resampler
-    interpolator = ModelGridInterpolator(detector_wl = wl)
+    synphot_bands = [color.split('#') for color in phot if len(color.split('#')) == 2]
+    if 'reddening' in phot:
+        reddening = phot['reddening']
+    else:
+        reddening = settings['default_reddening']
+    if 'mag_system' in phot:
+        mag_system = phot['mag_system']
+    else:
+        mag_system = settings['default_mag_system']
+    interpolator = ModelGridInterpolator(detector_wl = wl, synphot_bands = synphot_bands, reddening = reddening, mag_system = mag_system)
 
     # Get the fitting masks for each parameter
     masks = {}
