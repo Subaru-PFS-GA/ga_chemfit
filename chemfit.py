@@ -350,12 +350,6 @@ def read_grid_model(params):
         flux[flux > 100] = 1.0
         warn('Unphysical flux values in model {} replaced with unity'.format(params))
 
-    ############ Slap fake continua onto the model spectra
-    import scipy.constants as spc
-    bb = 2 * spc.h * spc.c ** 2.0 / (wl * 1e-10) ** 5 * (np.exp(spc.h * spc.c / ((wl * 1e-10) * spc.k * params['teff'])) - 1) ** -1
-    return wl, flux * bb
-    ############
-
     return wl, flux
 
 def read_grid_dimensions(flush_cache = False):
@@ -1036,8 +1030,18 @@ class ModelGridInterpolator:
         interpolator = self._build_interpolator(params)
         result = interpolator([params[key] for key in sorted(list(params.keys()))])[0]
         if len(self._synphot_bands) != 0:
+            ############ Slap fake continua onto the model spectra
+            import scipy.constants as spc
+            bb = 2 * spc.h * spc.c ** 2.0 / (self._wl * 1e-10) ** 5 * (np.exp(spc.h * spc.c / ((self._wl * 1e-10) * spc.k * params['teff'])) - 1) ** -1
+            return self._wl, result[len(self._synphot_bands):] * bb, result[:len(self._synphot_bands)]
+            ############
             return self._wl, result[len(self._synphot_bands):], result[:len(self._synphot_bands)]
         else:
+            ############ Slap fake continua onto the model spectra
+            import scipy.constants as spc
+            bb = 2 * spc.h * spc.c ** 2.0 / (self._wl * 1e-10) ** 5 * (np.exp(spc.h * spc.c / ((self._wl * 1e-10) * spc.k * params['teff'])) - 1) ** -1
+            return self._wl, result * bb
+            ############
             return self._wl, result
 
     def __call__(self, params):
@@ -1201,7 +1205,6 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
             model_flux = np.concatenate([np.array([model_phot[i]]), model_flux])
             index += 1
 
-        print(model_flux[0])
         return model_flux
 
     # Define p0 and bounds. The bounds are set to the model grid range stored in the interpolator object
