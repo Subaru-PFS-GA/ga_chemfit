@@ -30,6 +30,11 @@ warnings_stack = []
 warnings_messages = {}
 
 settings = {
+    ### Synthetic photometry ###
+    'filter_dir': script_dir + '/bands/',          # Path to the transmission profile directory
+    'default_mag_system': 'VEGAMAG',               # Default magnitude system
+    'default_reddening': 0.0,                      # Default E(B-V)
+
     ### Model grid settings ###
     'griddir': script_dir + '/../evan_models/',    # Path to the grid directory (must have grid7/bin and gridie/bin subdirectories)
 
@@ -345,7 +350,10 @@ def read_grid_model(params):
         flux[flux > 100] = 1.0
         warn('Unphysical flux values in model {} replaced with unity'.format(params))
 
-    return wl, flux
+    # Since Grid7/GridIE models do not have continua, we attach Planck's law blackbody continua to them as a temporary measure
+    bb = 2 * scp.constants.h * scp.constants.c ** 2.0 / (wl * 1e-10) ** 5 * (np.exp(scp.constants.h * scp.constants.c / ((wl * 1e-10) * scp.constants.k * params['teff'])) - 1) ** -1
+
+    return wl, flux * bb
 
 def read_grid_dimensions(flush_cache = False):
     """Determine the available dimensions in the model grid and the grid points
@@ -869,7 +877,7 @@ class ModelGridInterpolator:
             'num_interpolators_built': Total number of interpolator objects constructed
                                        (scipy.interpolate.RegularGridInterpolator)
     """
-    def __init__(self, resample = True, detector_wl = None, max_models = 1000):
+    def __init__(self, resample = True, detector_wl = None, synphot_bands = [], mag_system = settings['default_mag_system'], reddening = settings['default_reddening'], max_models = 1000):
         """
         Parameters
         ----------
@@ -886,6 +894,14 @@ class ModelGridInterpolator:
             identifiers and the "typical" wavelength sampling for each arm (as defined in
             `settings.arms`) will be assumed. Alternatively, set to `None` to use all
             arms defined in `settings.arms` with "typical" wavelength sampling
+        synphot_bands : list, optional
+            If synthetic photometry for the interpolated models is required, provide the desired
+            colors as elements of this list. Each color must be a 2-element tuple with the
+            filenames of the bluer and redder filters in the `settings['filter_dir']` directory
+        mag_system : str, optional
+            Magnitude system to use for synthetic photometry. Must be supported by `synphot()`
+        reddening : float, optional
+            Optical reddening parameter (E(B-V)) to use for synthetic photometry
         max_models : int, optional
             Maximum number of models to keep in the loaded models cache. If exceeded, the
             models loaded earliest will be removed from the cache. Higher numbers lead to
@@ -910,6 +926,11 @@ class ModelGridInterpolator:
 
         # Models embedded into the current interpolator
         setattr(self, '_interpolator_models', set())
+
+        # Synthetic photometry parameters
+        setattr(self, '_synphot_bands', synphot_bands)
+        setattr(self, '_mag_system', mag_system)
+        setattr(self, '_reddening', reddening)
 
         # Holders of statistical information
         setattr(self, 'statistics', {'num_models_used': 0, 'num_models_loaded': 0, 'num_interpolations': 0, 'num_interpolators_built': 0})
@@ -954,14 +975,28 @@ class ModelGridInterpolator:
         for model in new_models:
             params = np.array(model.split('|')).astype(float)
             keys = sorted(list(x.keys()))
-            wl, flux = safe_read_grid_model({keys[i]: params[i] for i in range(len(keys))}, self._grid)
+            params = {keys[i]: params[i] for i in range(len(keys))}
+            wl, flux = safe_read_grid_model(params, self._grid)
+
+            # Carry out synthetic photometry
+            colors = np.zeros(len(self._synphot_bands))
+            if len(self._synphot_bands) != 0:
+                if 'teff' not in params:
+                    raise ValueError('The model grid must have "teff" as one of the axes to compute synthetic photometry')
+                phot = synphot(wl, flux, params['teff'], np.unique(self._synphot_bands), mag_system = self._mag_system, reddening = self._reddening)
+                for i, color in enumerate(self._synphot_bands):
+                    if np.isnan(phot[color[0]]) or np.isnan(phot[color[1]]):
+                        raise ValueError('Could not calculate synthetic color {} for model {}'.format(color, params))
+                    # Note that the order of bands is reversed in the color calculation, since synphot() returns bolometric corrections, not magnitudes
+                    colors[i] = phot[color[1]] - phot[color[0]]
+
             if self._resample:
                 wl, flux = simulate_observation(wl, flux, self._detector_wl)
             try:
                 self._wl
             except:
                 setattr(self, '_wl', wl)
-            self._loaded[model] = flux
+            self._loaded[model] = np.concatenate([colors, flux]) # Prepend photometry to fluxes, so they are interpolated at the same time
             self._loaded_ordered += [model]
         self.statistics['num_models_loaded'] += len(new_models)
 
@@ -990,10 +1025,17 @@ class ModelGridInterpolator:
         flux : array_like
             Interpolated continuum-normalized flux densities corresponding to the wavelengths
             in `wl`
+        phot : array_like
+            If requested (i.e. if `synphot_bands` is not empty), synthetic colors for the bands
+            listed in `synphot_bands` with the desired reddening in the desired magnitude system
         """
         self.statistics['num_interpolations'] += 1
         interpolator = self._build_interpolator(params)
-        return self._wl, interpolator([params[key] for key in sorted(list(params.keys()))])[0]
+        result = interpolator([params[key] for key in sorted(list(params.keys()))])[0]
+        if len(self._synphot_bands) != 0:
+            return self._wl, result[len(self._synphot_bands):], result[:len(self._synphot_bands)]
+        else:
+            return self._wl, result
 
     def __call__(self, params):
         return self.interpolate(params)
@@ -1082,7 +1124,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     spline = scp.interpolate.splrep(wl[mask], flux[mask], w = ivar[mask], t = t, k = k)
     return scp.interpolate.splev(wl, spline)
 
-def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator):
+def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, phot):
     """Fit the model to the spectrum
     
     Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
@@ -1116,6 +1158,13 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
         logically added (or)
     interpolator : ModelGridInterpolator
         Model grid interpolator object that will be used to construct models during optimization
+    phot : dict
+        Photometric colors of the star. Each color is keyed by `BAND1#BAND2`, where `BAND1` and `BAND2` are
+        the transmission profile filenames of the filters, as required by `synphot()`. Each element is a
+        2-element tuple, where the first element is the measured color, and the second element is the
+        uncertainty in the measurement. The dictionary may also include optional elements `reddening`
+        (E(B-V), single numerical value,), and `mag_system` (one of the magnitude systems supported by
+        `synphot()`, single string)
     Returns
     -------
     array_like
@@ -1124,11 +1173,14 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
 
     # This function will be passed to curve_fit() as the model callback. The <signature> comment is a placeholder
     # to be replaced with the interpretation of the function signature later
-    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator):
+    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator, phot = phot):
         # <signature>
 
         # Load the requested model
-        model_wl, model_flux = interpolator(params)
+        if len(interpolator._synphot_bands) != 0:
+            model_wl, model_flux, model_phot = interpolator(params)
+        else:
+            model_wl, model_flux = interpolator(params)
         cont = estimate_continuum(data_wl, data_flux / model_flux, data_ivar * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
         model_wl = model_wl[mask]; model_flux = (cont * model_flux)[mask]
 
@@ -1139,6 +1191,12 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
                 model_wl = np.concatenate([np.array([-index]), model_wl])
                 model_flux = np.concatenate([np.array([params[param]]), model_flux])
                 index += 1
+
+        # Add photometric colors
+        for i, color in enumerate(interpolator._synphot_bands):
+            model_wl = np.concatenate([np.array([-index * 100]), model_wl])
+            model_flux = np.concatenate([np.array([model_phot[i]]), model_flux])
+            index += 1
 
         return model_flux
 
@@ -1151,7 +1209,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
     for param in dof:
         mask |= masks[param]
     mask &= (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
-    mask &= ~np.isnan(interpolator(initial))[1]
+    mask &= ~np.isnan(interpolator(initial)[1])
     x = wl[mask]; y = flux[mask]; sigma = ivar[mask] ** -0.5
 
     # Since we do not a priori know the number of parameters being fit, we need to dynamically update the signature of the
@@ -1161,7 +1219,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
     f[0] = f[0].replace('params', ', '.join(dof))
     f[0] = f[0].replace('mask', 'mask = mask')
     f[1] = f[1].replace('# <signature>', 'params = {' + ', '.join(['\'{}\': {}'.format(param, [param, initial[param]][param not in dof]) for param in initial]) + '}')
-    scope = {'priors': priors, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings}
+    scope = {'priors': priors, 'phot': phot, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings, 'synphot': synphot}
     exec('\n'.join(f)[f[0].find('def'):], scope)
     f = scope['f']
 
@@ -1174,6 +1232,14 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
             sigma = np.concatenate([np.array([priors[param][1]]), sigma])
             index += 1
 
+    # Add photometric colors
+    for color in interpolator._synphot_bands:
+        color = '#'.join(color)
+        x = np.concatenate([np.array([-index * 100]), x])
+        y = np.concatenate([np.array([phot[color][0]]), y])
+        sigma = np.concatenate([np.array([phot[color][1]]), sigma])
+        index += 1
+
     # Run the optimizer and save the results in "initial" and "errors"
     fit = scp.optimize.curve_fit(f, x, y, p0 = p0, bounds = bounds, sigma = sigma, **settings['curve_fit'])
     for i, param in enumerate(dof):
@@ -1181,7 +1247,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator)
         errors[param] = np.sqrt(fit[1][i,i])
     return fit[1]
 
-def chemfit(wl, flux, ivar, initial):
+def chemfit(wl, flux, ivar, initial, phot = {}):
     """Determine the stellar parameters of a star given its spectrum
     
     Parameters
@@ -1198,6 +1264,15 @@ def chemfit(wl, flux, ivar, initial):
         2-element tuple. In the former case, the value is treated as the initial guess to the
         fitter. Otherwise, the first element is treated as an initial guess and the second value
         is treated as the prior uncertainty in the parameter
+    phot : dict, optional
+        Photometric colors of the star (if available). The colors and the spectrum will be fit to
+        the models simultaneously to attain stricter constraints on the stellar parameters. Each
+        color is keyed by `BAND1#BAND2`, where `BAND1` and `BAND2` are the transmission profile
+        filenames of the filters, as required by `synphot()`. Each element is a 2-element tuple,
+        where the first element is the measured color, and the second element is the uncertainty
+        in the measurement. The dictionary may also include optional elements `reddening` (E(B-V),
+        single numerical value), and `mag_system` (one of the magnitude systems supported by
+        `synphot()`, single string)
     
     Returns
     -------
@@ -1217,7 +1292,16 @@ def chemfit(wl, flux, ivar, initial):
     ivar_combined = combine_arms(wl, ivar)[1]
 
     # Build the interpolator and resampler
-    interpolator = ModelGridInterpolator(detector_wl = wl)
+    synphot_bands = [color.split('#') for color in phot if len(color.split('#')) == 2]
+    if 'reddening' in phot:
+        reddening = phot['reddening']
+    else:
+        reddening = settings['default_reddening']
+    if 'mag_system' in phot:
+        mag_system = phot['mag_system']
+    else:
+        mag_system = settings['default_mag_system']
+    interpolator = ModelGridInterpolator(detector_wl = wl, synphot_bands = synphot_bands, reddening = reddening, mag_system = mag_system)
 
     # Get the fitting masks for each parameter
     masks = {}
@@ -1246,7 +1330,7 @@ def chemfit(wl, flux, ivar, initial):
 
 
     # Run the main fitter
-    cov = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator)
+    cov = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator, phot)
 
     # Get the texts of unique issued warnings
     warnings = np.unique(warnings_stack[warnings_stack_length:])
@@ -1287,3 +1371,10 @@ def best_fit(fit, wl, flux, ivar):
     ivar_combined = combine_arms(wl, ivar)[1]
     cont = estimate_continuum(wl_combined, flux_combined / model_flux, ivar_combined * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
     return {'wl': wl_combined, 'flux': flux_combined, 'ivar': ivar_combined}, {'wl': model_wl, 'cont': cont, 'flux': model_flux}
+
+def synphot(wl, flux, teff, bands, mag_system = settings['default_mag_system'], reddening = settings['default_reddening']):
+    # Placeholder function to compute synthetic photometry (bolometric corrections). For now, this relies on the BasicATLAS routine
+    import atlas
+    band_filenames = list(map(lambda fn: settings['filter_dir'] + '/' + fn, bands))
+    phot = atlas.synphot(None, mag_system, reddening, band_filenames, spectrum = {'wl': wl, 'flux': flux, 'teff': teff}, silent = True)
+    return {os.path.basename(key): phot[key] for key in phot}
