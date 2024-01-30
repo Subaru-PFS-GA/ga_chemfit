@@ -345,9 +345,9 @@ def read_grid_model(params):
     if not np.all(wl[1:] > wl[:-1]):
         raise ValueError('Model wavelengths out of order')
 
-    # Some of GridIE models have spurious spikes in the flux which may even be infinite
-    if np.max(flux) > 100:
-        flux[flux > 100] = 1.0
+    # Some of GridIE models have negative fluxes and spurious spikes in the flux which may even be infinite
+    if np.max(flux) > 100 or np.min(flux) < 0:
+        flux[(flux > 100) | (flux < 0.0)] = 1.0
         warn('Unphysical flux values in model {} replaced with unity'.format(params))
 
     # Since Grid7/GridIE models do not have continua, we attach Planck's law blackbody continua to them as a temporary measure
