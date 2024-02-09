@@ -9,6 +9,7 @@ import itertools
 import warnings
 import copy
 import inspect
+import importlib.util
 
 # scipy.optimize.curve_fit() throws an exception when the optimizer exhausts the maximum allowed number of function
 # evaluations. Since we are demanding fairly narrow tolerance, reaching the maximum number of evaluations is not
@@ -25,167 +26,107 @@ def least_squares_wrapper(*args, **kwargs):
 scp.optimize._minpack_py.least_squares = least_squares_wrapper
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
+settings = {}
 
 warnings_stack = []
 warnings_messages = {}
 
-settings = {
-    ### Synthetic photometry ###
-    'filter_dir': script_dir + '/bands/',          # Path to the transmission profile directory
-    'default_mag_system': 'VEGAMAG',               # Default magnitude system
-    'default_reddening': 0.0,                      # Default E(B-V)
+def read_grid_model(params):
+    """Load a specific model spectrum from the model grid
+    
+    This function definition is a template. The actual implementation is deferred to the
+    settings preset files
+    
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model parameters. A value must be provided for each grid
+        axis, keyed by the axis name
+    
+    Returns
+    -------
+    wl : array_like
+        Grid of model wavelengths in A
+    flux : array_like
+        Corresponding flux densities in wavelength space in arbitrary units
+    """
+    raise NotImplementedError()
 
-    ### Model grid settings ###
-    'griddir': script_dir + '/../evan_models/',    # Path to the grid directory (must have grid7/bin and gridie/bin subdirectories)
+def read_grid_dimensions(flush_cache = False):
+    """Determine the available dimensions in the model grid and the grid points
+    available in those dimensions
+    
+    This function definition is a template. The actual implementation is deferred to the
+    settings preset files
+    
+    Parameters
+    ----------
+    flush_cache : bool, optional
+        If True, discard cache and scan the grid afresh
+    
+    Returns
+    -------
+    dict
+        Dictionary of lists, keyed be grid axis names. The lists contain unique
+        values along the corresponding axis that are available in the grid
+    """
+    raise NotImplementedError()
 
-    ### Spectrograph settings ###
-    'arms': {                                      # Parameters of individual spectrograph arms
-        'blue': {
-            'FWHM': 2.07,                               # FWHM of the line spread function in the arm
-            'wl': np.linspace(3800, 6500, 4096),       # "Typical" bin wavelengths in the arm (exact wavelengths will vary between
-                                                       # observations due to changing wavelength calibration)
-            'priority': 1,                             # If multiple arms have overlapping wavelength ranges, the arm with the
-                                                       # highest priority will be used in the overlap region
-        },
-        'red_lr': {
-            'FWHM': 2.63,
-            'wl': np.linspace(6300, 9700, 4096),
-            'priority': 2,
-        },
-        'red_mr': {
-            'FWHM': 1.368,
-            'wl': np.linspace(7100, 8850, 4096),
-        },
-        'ir': {
-            'FWHM': 2.4,
-            'wl': np.linspace(9400, 12600, 4096),
-        }
-    },
+def initialize(*presets):
+    """Load the settings presets
 
-    ### Fitting masks ###
-    'masks': {
-        'red_mr': {
-            'alpha': [[6317.545, 6321.895], [7690.26, 7692.87], [7810.32, 7811.915], [7875.86, 7878.18], [7895.0, 7897.61], [8097.71, 8099.74], [8211.68, 8215.16], [8344.79, 8347.4],
-                      [8711.64, 8713.67], [8716.715, 8718.89], [8734.695, 8737.45], [8922.47, 8924.645], [6345.675, 6348.575], [7002.525, 7007.02], [7016.59, 7018.475], [7033.845, 7036.02],
-                      [7163.765, 7166.81], [7192.185, 7194.94], [7234.38, 7236.7], [7249.46, 7251.78], [7274.255, 7276.43], [7281.795, 7283.825], [7287.885, 7290.785], [7404.465, 7407.075],
-                      [7407.8, 7410.265], [7414.47, 7417.37], [7422.01, 7425.2], [7678.95, 7681.56], [7741.445, 7744.055], [7798.865, 7800.895], [7849.035, 7850.92], [7917.185, 7919.505],
-                      [7931.105, 7933.715], [7942.705, 7945.315], [8500.665, 8503.275], [8535.32, 8537.06], [8555.33, 8558.23], [8647.115, 8649.725], [8726.865, 8729.475], [8741.075, 8743.83],
-                      [8750.355, 8753.4], [8789.215, 8791.535], [8891.585, 8893.905], [6437.17, 6441.085], [6448.19, 6451.525], [6453.99, 6457.905], [6460.66, 6466.025], [6469.94, 6473.275],
-                      [6491.835, 6495.75], [6497.925, 6501.405], [6507.64, 6510.105], [6571.15, 6574.485], [6715.86, 6719.485], [7146.22, 7150.135], [7200.45, 7204.075], [7324.425, 7327.76],
-                      [8200.37, 8203.125], [8247.35, 8250.25], [8489.355, 8508.785], [8518.645, 8564.175], [8633.34, 8634.645], [8644.215, 8679.16], [8910.435, 8913.625], [8925.805, 8928.995]],
-            'zscale': [[6300.0, 6304.35], [6309.86, 6313.195], [6313.63, 6319.72], [6321.025, 6324.36], [6329.725, 6332.045], [6333.64, 6340.455], [6342.485, 6345.675], [6352.49, 6360.32],
-                       [6361.915, 6365.83], [6368.15, 6370.905], [6379.315, 6382.505], [6382.65, 6386.42], [6391.06, 6395.41], [6398.165, 6402.08], [6406.14, 6413.39], [6415.42, 6423.105],
-                       [6429.05, 6434.27], [6435.43, 6437.46], [6454.715, 6457.905], [6461.24, 6464.285], [6467.475, 6470.665], [6474.0, 6477.19], [6480.235, 6485.31], [6491.11, 6503.0],
-                       [6514.6, 6519.965], [6527.65, 6529.535], [6532.725, 6535.19], [6544.615, 6548.675], [6550.27, 6553.17], [6567.815, 6570.86], [6572.6, 6576.805], [6579.705, 6582.75],
-                       [6590.58, 6595.655], [6596.235, 6598.845], [6606.53, 6611.17], [6612.33, 6615.375], [6623.495, 6628.715], [6632.05, 6635.385], [6638.575, 6641.04], [6645.68, 6649.45],
-                       [6652.93, 6654.815], [6661.63, 6668.735], [6676.275, 6679.755], [6695.56, 6697.155], [6702.085, 6706.725], [6708.755, 6718.47], [6723.98, 6730.215], [6731.375, 6734.275],
-                       [6736.015, 6741.09], [6744.425, 6757.04], [6761.535, 6763.275], [6782.125, 6788.07], [6792.13, 6797.06], [6800.685, 6811.56], [6818.665, 6822.87], [6827.22, 6829.975],
-                       [6836.065, 6845.2], [6850.275, 6864.63], [6874.055, 6877.1], [6879.42, 6882.465], [6884.64, 6886.96], [6897.255, 6899.43], [6910.16, 6913.06], [6915.235, 6918.28],
-                       [6929.88, 6935.1], [6943.51, 6948.585], [6949.6, 6953.805], [6959.46, 6961.2], [6969.61, 6973.235], [6974.685, 6980.775], [6987.01, 6990.055], [6998.465, 7001.655],
-                       [7005.135, 7018.04], [7021.375, 7026.015], [7026.885, 7032.54], [7036.745, 7039.79], [7043.705, 7045.59], [7057.19, 7059.075], [7066.47, 7073.43], [7082.42, 7084.45],
-                       [7085.32, 7088.075], [7088.945, 7096.63], [7101.995, 7104.315], [7106.2, 7108.665], [7110.695, 7115.915], [7126.5, 7134.475], [7141.435, 7143.9], [7144.19, 7146.22],
-                       [7147.815, 7152.89], [7154.63, 7159.705], [7161.735, 7166.085], [7174.93, 7182.76], [7185.66, 7193.49], [7193.78, 7196.39], [7205.525, 7209.15], [7211.325, 7214.225],
-                       [7218.14, 7226.55], [7227.275, 7230.03], [7238.44, 7241.34], [7244.385, 7245.4], [7252.505, 7257.0], [7257.87, 7262.8], [7267.73, 7269.47], [7277.445, 7279.765],
-                       [7281.65, 7286.435], [7287.015, 7290.205], [7291.365, 7294.99], [7299.485, 7302.675], [7305.14, 7312.97], [7314.855, 7318.19], [7319.35, 7325.44], [7332.4, 7336.17],
-                       [7342.84, 7354.585], [7362.85, 7367.635], [7368.94, 7370.97], [7380.975, 7384.165], [7384.89, 7391.125], [7399.68, 7403.16], [7409.685, 7412.73], [7417.08, 7422.59],
-                       [7428.97, 7432.16], [7434.625, 7438.105], [7439.41, 7450.575], [7452.895, 7455.215], [7459.855, 7464.64], [7470.875, 7483.49], [7490.16, 7496.83], [7497.265, 7499.73],
-                       [7504.95, 7508.72], [7509.3, 7513.07], [7513.65, 7517.13], [7521.77, 7524.09], [7529.6, 7534.53], [7539.17, 7542.65], [7544.825, 7548.74], [7558.745, 7560.775],
-                       [7562.225, 7563.82], [7567.445, 7570.345], [7581.51, 7590.21], [7592.82, 7595.14], [7604.565, 7607.03], [7609.495, 7611.09], [7614.135, 7621.965], [7649.515, 7657.055],
-                       [7659.665, 7666.045], [7708.82, 7713.315], [7713.605, 7715.635], [7717.955, 7720.42], [7721.58, 7724.77], [7744.49, 7752.32], [7779.0, 7782.19], [7806.55, 7809.45],
-                       [7809.74, 7811.77], [7830.62, 7833.81], [7854.4, 7856.43], [7868.465, 7870.785], [7911.24, 7914.575], [7935.455, 7938.79], [7939.515, 7942.995], [7944.155, 7947.49],
-                       [7953.725, 7956.77], [7958.22, 7960.25], [7993.165, 7996.065], [7996.935, 8000.56], [8025.79, 8029.85], [8042.175, 8049.57], [8070.885, 8076.83], [8079.15, 8081.905],
-                       [8083.645, 8086.69], [8095.535, 8098.58], [8106.7, 8109.6], [8110.76, 8113.515], [8128.16, 8130.335], [8144.545, 8147.445], [8148.46, 8150.78], [8178.04, 8179.925],
-                       [8185.725, 8188.045], [8196.02, 8200.37], [8202.545, 8209.215], [8218.64, 8222.12], [8230.675, 8233.865], [8237.49, 8240.68], [8246.625, 8249.67], [8258.66, 8260.835],
-                       [8263.3, 8264.895], [8268.23, 8270.55], [8274.755, 8277.365], [8286.79, 8290.56], [8291.865, 8295.055], [8302.16, 8304.045], [8305.06, 8312.31], [8325.215, 8329.42],
-                       [8330.145, 8333.625], [8337.83, 8346.24], [8347.545, 8350.59], [8357.26, 8362.19], [8364.22, 8367.12], [8380.75, 8383.65], [8385.825, 8389.74], [8394.235, 8396.12],
-                       [8400.035, 8402.935], [8421.35, 8427.15], [8433.385, 8435.125], [8438.17, 8441.36], [8445.275, 8449.045], [8450.35, 8451.655], [8465.43, 8472.825], [8476.305, 8477.9],
-                       [8479.93, 8483.555], [8495.59, 8498.49], [8512.41, 8517.195], [8524.59, 8528.505], [8537.06, 8539.235], [8560.84, 8563.015], [8570.845, 8572.875], [8580.705, 8584.185],
-                       [8591.58, 8594.19], [8597.38, 8600.28], [8606.225, 8608.4], [8609.415, 8617.535], [8620.0, 8623.335], [8631.455, 8633.34], [8651.755, 8655.67], [8660.455, 8664.37],
-                       [8666.255, 8668.865], [8671.185, 8676.55], [8677.855, 8681.335], [8686.555, 8691.05], [8697.285, 8701.055], [8708.885, 8714.685], [8727.01, 8730.49], [8746.005, 8748.76],
-                       [8755.43, 8758.91], [8762.39, 8765.58], [8783.415, 8785.59], [8789.215, 8798.35], [8822.275, 8826.19], [8832.57, 8834.745], [8836.775, 8840.255], [8845.04, 8848.23],
-                       [8861.28, 8864.325], [8865.34, 8869.98], [8874.765, 8880.275], [8905.07, 8906.955], [8918.7, 8923.34], [8925.66, 8927.69], [8927.98, 8933.055], [8941.32, 8947.845],
-                       [8949.15, 8951.18], [8973.8, 8979.165], [8983.66, 8985.98], [8993.665, 8995.695], [8997.87, 9001.35], [9006.28, 9015.56], [9018.75, 9020.635], [9022.955, 9026.0],
-                       [9029.19, 9032.38], [9057.175, 9058.915], [9061.09, 9063.41], [9069.21, 9071.53], [9078.055, 9081.68], [9083.42, 9085.015], [9086.32, 9091.25], [9097.63, 9099.515]],
-        },
-        'red_lr': {
-            'alpha': [[6309.86, 6312.76], [7689.68, 7693.45], [7810.465, 7811.915], [7875.425, 7878.615], [7894.42, 7898.335], [8097.275, 8100.175], [8210.955, 8215.595], [8344.355, 8347.98],
-                      [8710.625, 8713.96], [8716.28, 8719.325], [8733.97, 8738.03], [8922.035, 8925.08], [6369.31, 6373.515], [7002.235, 7007.31], [7016.3, 7018.62], [7033.41, 7036.455],
-                      [7163.185, 7167.245], [7191.605, 7195.665], [7249.025, 7252.215], [7273.82, 7276.72], [7281.65, 7284.115], [7287.16, 7291.365], [7403.885, 7410.845], [7413.745, 7417.95],
-                      [7421.285, 7425.925], [7668.655, 7670.54], [7740.865, 7744.635], [7798.72, 7801.185], [7848.89, 7851.21], [7916.75, 7920.085], [7930.38, 7934.295], [7941.98, 7946.04],
-                      [8443.535, 8444.405], [8500.23, 8503.71], [8535.175, 8537.205], [8554.75, 8558.955], [8646.39, 8650.305], [8685.54, 8687.28], [8726.285, 8730.055], [8740.495, 8744.41],
-                      [8749.63, 8754.125], [8788.925, 8792.26], [6436.155, 6441.955], [6447.175, 6452.685], [6452.975, 6458.34], [6459.645, 6466.75], [6469.07, 6474.29], [6490.82, 6502.275],
-                      [6507.205, 6510.54], [6570.135, 6575.355], [6714.99, 6720.355], [7145.205, 7151.005], [7199.435, 7204.945], [7323.555, 7328.775], [8199.645, 8203.85], [8246.48, 8251.12],
-                      [8252.86, 8256.63], [8489.355, 8508.785], [8518.645, 8564.175], [8644.07, 8679.45], [8909.565, 8914.64], [8924.935, 8929.865], [9097.195, 9099.805]],
-            'zscale': [[6300.0, 6305.51], [6307.25, 6325.23], [6329.145, 6346.545], [6351.475, 6366.555], [6367.28, 6371.63], [6378.59, 6386.71], [6390.19, 6396.57], [6397.005, 6403.095],
-                       [6405.415, 6423.975], [6428.035, 6438.62], [6453.99, 6458.775], [6460.515, 6465.3], [6466.46, 6471.535], [6473.13, 6478.205], [6479.365, 6485.89], [6491.4, 6503.725],
-                       [6513.73, 6520.835], [6527.36, 6529.825], [6532.0, 6535.915], [6543.745, 6554.04], [6556.07, 6557.375], [6566.945, 6577.82], [6578.69, 6583.91], [6590.0, 6599.425],
-                       [6605.66, 6616.1], [6622.625, 6629.15], [6631.18, 6636.4], [6637.995, 6641.62], [6644.955, 6650.32], [6652.64, 6654.96], [6660.615, 6669.46], [6675.26, 6680.77],
-                       [6695.415, 6698.17], [6701.07, 6718.76], [6723.545, 6741.815], [6744.135, 6757.475], [6761.535, 6763.42], [6781.4, 6788.94], [6791.55, 6797.205], [6800.25, 6812.285],
-                       [6818.085, 6823.16], [6826.35, 6830.845], [6835.485, 6846.215], [6849.405, 6864.92], [6873.33, 6877.825], [6878.985, 6887.395], [6896.53, 6899.865], [6909.435, 6919.44],
-                       [6929.735, 6936.405], [6942.495, 6954.095], [6959.46, 6961.345], [6969.32, 6981.935], [6986.14, 6990.925], [6997.45, 7002.525], [7005.135, 7019.055], [7020.505, 7032.975],
-                       [7035.875, 7040.66], [7043.415, 7045.88], [7056.9, 7059.22], [7065.745, 7073.72], [7082.13, 7097.21], [7100.69, 7120.265], [7125.34, 7135.345], [7140.855, 7160.285],
-                       [7161.3, 7166.955], [7174.35, 7183.63], [7184.79, 7196.97], [7204.51, 7230.755], [7237.715, 7242.065], [7252.65, 7263.67], [7267.44, 7269.47], [7276.865, 7280.055],
-                       [7281.65, 7295.715], [7299.05, 7326.165], [7331.53, 7336.025], [7342.26, 7354.875], [7362.56, 7371.115], [7375.175, 7377.205], [7380.395, 7391.995], [7395.91, 7396.925],
-                       [7398.81, 7403.885], [7408.815, 7413.6], [7416.355, 7422.88], [7427.375, 7433.175], [7434.335, 7451.3], [7452.46, 7455.36], [7459.13, 7465.075], [7470.44, 7487.26],
-                       [7489.29, 7500.89], [7504.225, 7517.71], [7521.335, 7524.38], [7528.585, 7535.11], [7538.3, 7543.085], [7543.955, 7549.32], [7558.455, 7563.82], [7566.575, 7571.215],
-                       [7580.93, 7590.355], [7592.24, 7595.575], [7604.275, 7607.32], [7609.495, 7611.09], [7613.7, 7622.545], [7658.65, 7666.915], [7708.095, 7715.925], [7717.52, 7725.64],
-                       [7733.18, 7734.195], [7744.055, 7752.9], [7778.13, 7783.06], [7805.825, 7811.915], [7829.75, 7834.68], [7843.815, 7845.12], [7867.885, 7871.22], [7910.37, 7915.59],
-                       [7934.585, 7948.36], [7953.145, 7960.54], [7992.44, 8002.155], [8024.63, 8030.72], [8041.885, 8050.295], [8070.305, 8087.56], [8089.445, 8090.75], [8094.955, 8099.015],
-                       [8106.12, 8114.24], [8127.725, 8130.915], [8144.11, 8151.215], [8177.895, 8180.07], [8185.29, 8188.48], [8196.02, 8210.085], [8217.625, 8222.99], [8229.805, 8235.315],
-                       [8236.04, 8243.0], [8245.9, 8250.395], [8258.225, 8261.27], [8263.3, 8264.895], [8267.94, 8270.84], [8274.32, 8277.945], [8286.5, 8296.07], [8301.725, 8304.335],
-                       [8305.495, 8312.89], [8324.2, 8334.64], [8336.67, 8351.46], [8356.535, 8367.845], [8380.025, 8390.61], [8393.945, 8396.265], [8399.165, 8403.805], [8413.52, 8415.405],
-                       [8420.625, 8427.585], [8433.24, 8435.27], [8437.3, 8441.94], [8444.695, 8449.915], [8464.995, 8473.26], [8476.305, 8477.9], [8479.64, 8483.845], [8492.545, 8499.795],
-                       [8511.395, 8518.21], [8524.3, 8529.085], [8536.77, 8539.525], [8560.26, 8563.305], [8570.41, 8573.165], [8579.835, 8585.78], [8591.145, 8594.625], [8596.655, 8601.005],
-                       [8606.08, 8624.205], [8631.31, 8633.775], [8651.755, 8656.54], [8659.875, 8664.66], [8665.675, 8669.155], [8671.185, 8681.915], [8685.54, 8691.92], [8696.56, 8701.78],
-                       [8708.16, 8715.555], [8726.575, 8731.07], [8745.28, 8749.63], [8754.56, 8759.78], [8761.375, 8766.305], [8782.98, 8785.88], [8788.635, 8798.495], [8821.26, 8827.35],
-                       [8832.425, 8841.125], [8844.46, 8848.955], [8861.135, 8870.85], [8874.33, 8881.0], [8896.805, 8898.255], [8904.635, 8907.245], [8917.975, 8923.195], [8925.37, 8933.78],
-                       [8940.16, 8951.615], [8972.785, 8979.6], [8983.37, 8986.56], [8993.52, 9002.365], [9006.135, 9016.43], [9018.605, 9021.07], [9022.085, 9026.725], [9028.465, 9033.105],
-                       [9057.175, 9059.06], [9060.51, 9063.845], [9068.775, 9071.965], [9077.33, 9092.41], [9097.485, 9099.805]],
-        },
-        'blue': {
-            'alpha': [[4164.235, 4169.31], [4350.27, 4355.055], [4379.415, 4381.3], [4700.59, 4705.375], [5152.845, 5202.435], [5525.93, 5530.86], [5709.21, 5712.98], [5783.885, 5786.64],
-                      [4100.725, 4105.075], [4126.68, 4132.48], [4429.875, 4432.195], [4782.37, 4783.675], [4791.36, 4793.39], [4866.325, 4867.92], [5039.89, 5042.21], [5054.39, 5057.58],
-                      [5664.405, 5667.305], [5674.7, 5676.295], [5682.965, 5686.01], [5689.2, 5691.665], [5699.93, 5702.25], [5706.89, 5709.935], [5747.055, 5748.36], [5752.565, 5754.885],
-                      [5770.835, 5773.445], [5779.535, 5781.275], [5791.86, 5794.325], [5796.645, 5798.965], [5947.01, 5950.2], [5957.015, 5958.175], [6141.745, 6146.095], [6153.635, 6156.825],
-                      [6235.995, 6238.75], [6242.52, 6245.71], [6253.54, 6255.135], [4106.38, 4110.585], [4131.175, 4134.075], [4135.38, 4142.05], [4145.53, 4271.39], [4272.26, 4294.155],
-                      [4294.735, 4309.525], [4310.685, 4314.02], [4315.47, 4321.705], [4353.17, 4357.085], [4422.77, 4427.99], [4432.195, 4438.14], [4451.915, 4458.73], [4471.055, 4472.94],
-                      [4510.495, 4513.975], [4524.705, 4528.91], [4576.47, 4588.07], [4683.48, 4687.105], [4719.73, 4722.34], [4799.48, 4800.495], [4845.88, 4848.78], [4876.185, 4879.955],
-                      [5000.305, 5002.77], [5018.575, 5021.765], [5039.6, 5043.515], [5258.55, 5267.54], [5268.7, 5272.035], [5306.545, 5307.995], [5338.445, 5339.895], [5347.435, 5351.64],
-                      [5510.995, 5514.91], [5580.16, 5583.785], [5586.54, 5604.81], [5855.225, 5859.72], [5865.955, 5869.145], [6096.36, 6098.1], [6100.275, 6105.205], [6119.56, 6124.925],
-                      [6154.505, 6157.55], [6159.145, 6171.76]],
-            'zscale': [[4100.0, 4355.2], [4356.36, 4696.965], [4697.4, 4722.775], [4724.37, 4752.645], [4754.24, 4897.935], [4900.11, 5033.365], [5034.525, 5093.25], [5094.845, 5156.035],
-                       [5157.195, 5174.595], [5175.465, 5181.845], [5182.57, 5238.685], [5240.28, 5310.025], [5312.635, 5335.4], [5336.27, 5343.375], [5348.015, 5351.495], [5351.93, 5354.685],
-                       [5356.86, 5418.63], [5420.225, 5458.215], [5459.23, 5509.11], [5510.415, 5514.185], [5515.055, 5605.39], [5606.405, 5628.88], [5631.925, 5669.625], [5676.73, 5681.37],
-                       [5684.415, 5688.475], [5689.925, 5725.015], [5729.8, 5744.3], [5746.475, 5756.19], [5758.075, 5765.035], [5768.515, 5787.365], [5789.54, 5799.835], [5802.735, 5818.395],
-                       [5826.08, 5829.415], [5832.46, 5839.855], [5844.785, 5865.085], [5871.03, 5874.51], [5875.96, 5885.675], [5890.17, 5894.665], [5897.42, 5918.445], [5926.13, 5936.57],
-                       [5939.615, 5945.27], [5946.865, 5960.64], [5961.655, 5964.845], [5973.545, 5978.91], [5981.81, 5988.915], [5989.64, 5993.41], [5995.73, 6000.08], [6000.95, 6028.935],
-                       [6033.14, 6037.2], [6040.39, 6043.725], [6053.295, 6058.08], [6059.53, 6067.65], [6076.64, 6086.935], [6087.95, 6106.22], [6111.875, 6116.805], [6118.4, 6122.17],
-                       [6126.085, 6130.725], [6134.205, 6140.295], [6141.02, 6142.325], [6144.935, 6153.78], [6155.955, 6167.12], [6168.715, 6175.53], [6178.285, 6193.8], [6197.86, 6202.355],
-                       [6211.2, 6222.655], [6224.975, 6234.545], [6236.575, 6242.665], [6244.26, 6249.77], [6250.35, 6257.89], [6262.965, 6273.26], [6276.015, 6282.975], [6288.92, 6294.14],
-                       [6295.59, 6299.795]],
-        },
-        'all': {
-            'all': [[4500., 5164.322], [5170.322, 5892.924], [5898.924, 8488.023], [8508.023, 8525.091], [8561.091, 8645.141], [8679.141, 9100.]],
-        },
-        'continuum': [[6864, 6935], [7591, 7694], [8938, 9100]],
-    },
+    Instrument specifications, fitting parameters, model grid handling and other required data and procedures
+    are stored in a collection of Python scripts referred to as presets. The scripts may be found in the
+    "settings" directory. Each script is expected to define a `settings` dictionary, the entries of which will
+    then be used to update the global `settings` dictionary. Optionally, the scripts may also define the
+    `read_grid_model()` and `read_grid_dimensions()` functions, following the templates in this file. These
+    functions will be used to load model spectra during the fitting process
 
-    ### Which parameters to fit? ###
-    'fit_dof': ['zscale', 'alpha', 'teff', 'logg'],
+    Note that the "default" preset will be loaded automatically
 
-    ### Optimization parameters ###
-    'curve_fit': {
-        'absolute_sigma': True,
-        'ftol': 1e-10,
-        'gtol': 1e-10,
-        'xtol': 1e-10,
-    },
-    'cont_pix': 165,
-    'spline_order': 3,
+    Parameters
+    ----------
+    presets : tuple
+        Settings presets to load. For each preset, the function will attempt to load both
+        "settings/roaming/<preset>.py" and "settings/local/<preset>.py" in that order, if available. It is
+        recommended to store global parameters in the former file (versioned) and machine-specific parameters in
+        the latter file (not versioned, i.e. ignored)
+    """
+    global read_grid_model, read_grid_dimensions
 
-    ### Warnings ###
-    'throw_python_warnings': True,
-}
+    # Environment variables provided to the preset scripts
+    env = {'script_dir': script_dir, 'np': np, 'original_settings': copy.deepcopy(settings), 'copy': copy}
+
+    index = 0 # Load counter to ensure unique module names for all loaded files
+    for preset in presets:
+        scripts = ['{}/settings/roaming/{}.py'.format(script_dir, preset), '{}/settings/local/{}.py'.format(script_dir, preset)]
+        scripts = [script for script in scripts if os.path.isfile(script)]
+        if len(scripts) == 0:
+            raise ValueError('Settings preset {} not found'.format(preset))
+        for script in scripts:
+            # Load and run the file
+            index += 1
+            spec = importlib.util.spec_from_file_location('settings_{}'.format(index), script)
+            module = importlib.util.module_from_spec(spec)
+            module.__dict__.update(env)
+            spec.loader.exec_module(module)
+
+            # Update the global settings variable and make it available to the module in case it defines model read
+            # functions and they need it
+            settings.update(module.settings)
+            module.settings = settings
+
+            # Try to overwrite the model read functions with the ones stored in the module
+            try:
+                read_grid_model = module.read_grid_model
+            except:
+                pass
+            try:
+                read_grid_dimensions = module.read_grid_dimensions
+            except:
+                pass
+# Load the default settings preset
+initialize('default')
 
 def warn(message):
     """Issue a warning. Wrapper for `warnings.warn()`
@@ -225,11 +166,11 @@ def safe_read_grid_model(params, grid):
           interpolate the result to the requested point
         - If no grid line has neighbors on both sides of the requested point, carry out
           nearest neighbor extrapolation along the axis with the closest neighbor
-        - If extrapolation is impossible either, raise `ValueError`
+        - If extrapolation is impossible either, raise `ValueError()`
 
     Note: this function is not designed for accuracy or efficiency. Any "proper" handling of
     missing models should be carried out in the main interpolator. This function merely provides
-    a safe way to read models from disk
+    a safe way to read models from disk following the "just warn don't crash" philosophy
 
     Parameters
     ----------
@@ -280,130 +221,6 @@ def safe_read_grid_model(params, grid):
         direction = np.where(~np.isnan(neighbor_distances[shortest]))[0][0]
         warn('Cannot load model {}. Will load {}={} instead'.format(params, shortest, grid[shortest][neighbor_positions[shortest][direction]]))
         return neighbors[shortest][direction]
-
-
-def read_grid_model(params):
-    """Load a specific model spectrum from the model grid
-    
-    This version of the function interfaces with Grid7/GridIE.
-    `settings['griddir']` must be pointed to the directories that contains the
-    "grid7/bin" and "gridie/bin" subdirectories
-    
-    Parameters
-    ----------
-    params : dict
-        Dictionary of model parameters. A value must be provided for each grid
-        axis, keyed by the axis name
-    
-    Returns
-    -------
-    wl : array_like
-        Grid of model wavelengths in A
-    flux : array_like
-        Corresponding continuum-normalized flux densities
-    """
-    wl = np.array([], dtype = float)
-    flux = np.array([], dtype = float)
-
-    # Load the blue synthetic spectrum, then the red one
-    for blue_or_red in [True, False]:
-
-        # Determine the path to the file containing the spectrum
-        subgrid_dir = ['grid7', 'gridie'][int(blue_or_red)]
-        params_formatted = {}
-        for param in ['logg', 'zscale', 'alpha']:
-            params_formatted[param] = ['_', '-'][int(params[param] < 0)] + '{:02d}'.format(int(np.round(np.abs(params[param]) * 10)))
-        params_formatted['teff'] = int(params['teff'])
-        filename = 't{teff}g{logg}f{zscale}a{alpha}.bin.gz'.format(**params_formatted)
-        cards = [settings['griddir'], subgrid_dir, 'bin', params_formatted['teff'], params_formatted['logg'], filename]
-        if not os.path.isfile(path := (template := '{}/{}/{}/t{}/g{}/{}').format(*cards)):
-            cards[-1] = cards[-1].replace('a', 'a_00a')
-            if not os.path.isfile(path := template.format(*cards)):
-                raise FileNotFoundError('Cannot locate {}'.format(path))
-
-        # Load flux from the binary file
-        f = gzip.open(path, 'rb')
-        file_flux = 1.0 - np.frombuffer(f.read(), dtype = np.float32)
-        f.close()
-
-        # Generate the corresponding wavelengths based on some hard-coded parameters
-        step = 0.14
-        if blue_or_red:
-            start = 4100
-            stop = 6300
-        else:
-            start = 6300
-            stop = 9100
-        file_wl = np.arange(start, stop + step, step)
-        file_wl = file_wl[file_wl <= stop + step * 0.1]
-        if len(file_wl) != len(file_flux):
-            raise ValueError('Unexpected number of points in {}'.format(path))
-
-        wl = np.concatenate([wl, file_wl])
-        flux = np.concatenate([flux, file_flux])
-
-    if not np.all(wl[1:] > wl[:-1]):
-        raise ValueError('Model wavelengths out of order')
-
-    # Some of GridIE models have negative fluxes and spurious spikes in the flux which may even be infinite
-    if np.max(flux) > 100 or np.min(flux) < 0:
-        flux[(flux > 100) | (flux < 0.0)] = 1.0
-        warn('Unphysical flux values in model {} replaced with unity'.format(params))
-
-    # Since Grid7/GridIE models do not have continua, we attach Planck's law blackbody continua to them as a temporary measure
-    bb = 2 * scp.constants.h * scp.constants.c ** 2.0 / (wl * 1e-10) ** 5 * (np.exp(scp.constants.h * scp.constants.c / ((wl * 1e-10) * scp.constants.k * params['teff'])) - 1) ** -1
-
-    return wl, flux * bb
-
-def read_grid_dimensions(flush_cache = False):
-    """Determine the available dimensions in the model grid and the grid points
-    available in those dimensions
-    
-    This version of the function interfaces with Grid7/GridIE.
-    `settings['griddir']` must be pointed to the directories that contains the
-    "grid7/bin" and "gridie/bin" subdirectories
-
-    The function implements file caching
-    
-    Parameters
-    ----------
-    flush_cache : bool, optional
-        If True, discard cache and read the grid afresh
-    
-    Returns
-    -------
-    dict
-        Dictionary of lists, keyed be grid axis names. The lists contain unique
-        values along the corresponding axis that are available in the grid
-    """
-    # Apply caching
-    if os.path.isfile(cache := (settings['griddir'] + '/cache.pkl')) and (not flush_cache):
-        f = open(cache, 'rb')
-        grid = pickle.load(f)
-        f.close()
-        return grid
-
-    # Grid7 only has four dimensions: Teff, log(g), [M/H] and [alpha/M]
-    grid = {'teff': [], 'logg': [], 'zscale': [], 'alpha': []}
-
-    # Recursively collect and parse the filenames of all *.bin.gz models
-    for root, subdirs, files in os.walk(settings['griddir']):
-        for file in files:
-            if file[-7:].lower() == '.bin.gz':
-                breakdown = list(re.findall('t([0-9]{4})g([_-][0-9]{2})f([_-][0-9]{2})a([_-][0-9]{2})\.', file.replace('a_00a', 'a'))[0])
-                breakdown[0] = int(breakdown[0])
-                for i in range(1, 4):
-                    breakdown[i] = np.round(float(breakdown[i].replace('_', '')) / 10.0, 1)
-                grid['teff'] += [breakdown[0]]
-                grid['logg'] += [breakdown[1]]
-                grid['zscale'] += [breakdown[2]]
-                grid['alpha'] += [breakdown[3]]
-
-    grid = {axis: np.unique(grid[axis]) for axis in grid}
-    f = open(cache, 'wb')
-    pickle.dump(grid, f)
-    f.close()
-    return grid
 
 def convolution_integral(sigma, segment_left, segment_right, bin_left, bin_right):
     """Calculate weights of the convolution for an arbitrary flux density spectrum
@@ -658,10 +475,10 @@ def combine_arms(wl = None, flux = None):
     a single spectrum
     
     `wl` and `flux` are dictionaries, keyed by spectrograph arm identifiers (must be
-    listed in `settings.arms`). The function combines the spectra in each arm into a
+    listed in `settings['arms']`). The function combines the spectra in each arm into a
     single spectrum. If the wavelength ranges overlap between two arms, the overlap
     region is removed from the lower priority arm (the priorities are set in
-    `settings.arms` as well)
+    `settings['arms']` as well)
     
     Parameters
     ----------
@@ -670,8 +487,8 @@ def combine_arms(wl = None, flux = None):
         need to be combined. The values are 1D arrays of reference wavelengths of
         detector bins (see `get_bin_edges()`). Alternatively, provide a list of arm
         identifiers and the "typical" wavelength sampling for each arm (as defined in
-        `settings.arms`) will be assumed. Alternatively, set to `None` to use all
-        arms defined in `settings.arms` with "typical" wavelength sampling
+        `settings['arms']`) will be assumed. Alternatively, set to `None` to use all
+        arms defined in `settings['arms']` with "typical" wavelength sampling
     flux : None or dict, optional
         Dictionary of fluxes corresponding to the wavelength bins in `wl`. Must have
         the same keys and array lengths as `wl`. Alternatively, set to `None` if only
@@ -771,8 +588,7 @@ def combine_arms(wl = None, flux = None):
         return wl
 
 def simulate_observation(wl, flux, detector_wl = None, mask_unmodelled = True, clip = 5, combine = True):
-    """Simulate observation of the model spectrum by a spectrograph. The result is a combined
-    spectrum from all arms (see `combine_arms()`)
+    """Simulate observation of the model spectrum by a spectrograph
     
     If the model does not fully cover the range of a spectrograph arm, the output flux density
     in the affected detector wavelength bins will be set to `np.nan`. This behavior can be
@@ -793,8 +609,8 @@ def simulate_observation(wl, flux, detector_wl = None, mask_unmodelled = True, c
         are used in this observation. The values are 1D arrays of reference wavelengths of
         detector bins (see `get_bin_edges()`). Alternatively, provide a list of arm
         identifiers and the "typical" wavelength sampling for each arm (as defined in
-        `settings.arms`) will be assumed. Alternatively, set to `None` to use all
-        arms defined in `settings.arms` with "typical" wavelength sampling
+        `settings['arms']`) will be assumed. Alternatively, set to `None` to use all
+        arms defined in `settings['arms']` with "typical" wavelength sampling
     mask_unmodelled : bool, optional
         If True, set to `np.nan` the flux density in all bins that are affected by the finite
         wavelength range of the model spectrum. Otherwise, the bins near the edges of the
@@ -892,8 +708,8 @@ class ModelGridInterpolator:
             are used in this observation. The values are 1D arrays of reference wavelengths of
             detector bins (see `get_bin_edges()`). Alternatively, provide a list of arm
             identifiers and the "typical" wavelength sampling for each arm (as defined in
-            `settings.arms`) will be assumed. Alternatively, set to `None` to use all
-            arms defined in `settings.arms` with "typical" wavelength sampling
+            `settings['arms']`) will be assumed. Alternatively, set to `None` to use all
+            arms defined in `settings['arms']` with "typical" wavelength sampling
         synphot_bands : list, optional
             If synthetic photometry for the interpolated models is required, provide the desired
             colors as elements of this list. Each color must be a 2-element tuple with the
@@ -1023,8 +839,8 @@ class ModelGridInterpolator:
         wl : array_like
             Grid of model wavelengths in A
         flux : array_like
-            Interpolated continuum-normalized flux densities corresponding to the wavelengths
-            in `wl`
+            Interpolated flux densities in wavelength space in arbitrary units corresponding to the
+            wavelengths in `wl`
         phot : array_like
             If requested (i.e. if `synphot_bands` is not empty), synthetic colors for the bands
             listed in `synphot_bands` with the desired reddening in the desired magnitude system
@@ -1072,7 +888,7 @@ def ranges_to_mask(arr, ranges, in_range_value = True, strict = False):
     return mask
 
 def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
-    """Estimate continuum level in the spectrum using a spline fit
+    """Estimate continuum correction in the spectrum using a spline fit
     
     The function carries out a weighted spline fit to a spectrum given by wavelengths in `wl`,
     flux densities in `flux` and using the weights in `ivar` (usually inverted variances)
@@ -1082,8 +898,8 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     the edge may be poorly conditioned (the spline will be extrapolated in that region, leading
     to potentially very large edge effects). If that part of the continuum is then used in
     stellar parameter determination, extremely poor convergence is likely. As such, when the
-    optional `masks` argument is given, the affected region will also be removed from the main
-    fitter
+    spectral masks used by the fitter are passed in the optional `masks` parameter, it will be
+    updated to mask out the affected region of the spectrum
     
     Parameters
     ----------
@@ -1106,7 +922,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     Returns
     -------
     array_like
-        Estimated continuum multiplier at each wavelength in `wl`
+        Estimated continuum correction multiplier at each wavelength in `wl`
     """
     mask = (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
     for bad_continuum_range in settings['masks']['continuum']:
@@ -1363,7 +1179,7 @@ def best_fit(fit, wl, flux, ivar):
         'ivar' (observation weights)
     model : dict
         Best-fit model spectrum. The keys are 'wl' (wavelength, same as for the observed spectrum), 'flux'
-        (continuum-normalized model flux), 'cont' (continuum multiplier)
+        (model flux density without continuum correction), 'cont' (continuum correction multiplier)
     """
     interpolator = ModelGridInterpolator(detector_wl = wl)
     model_wl, model_flux = interpolator(fit['fit'])
