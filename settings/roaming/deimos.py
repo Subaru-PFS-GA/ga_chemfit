@@ -3,9 +3,8 @@
 #                     DEIMOS PRESET                        #
 #                                                          #
 #   This preset adapts chemfit to the Deimos spectrograph  #
-#   data. It defines a blank spectrograph arm and a blank  #
-#   fitting mask that can be updated by the user as        #
-#   necessary                                              #
+#   data. It defines a blank spectrograph arm that can be  #
+#   updated by the user as necessary                       #
 #                                                          #
 ############################################################
 
@@ -23,5 +22,3 @@ settings = {
     'masks': copy.deepcopy(original_settings['masks']),
 }
 
-# The general fitting mask must be specified for each observation
-settings['masks']['all']['all'] = None

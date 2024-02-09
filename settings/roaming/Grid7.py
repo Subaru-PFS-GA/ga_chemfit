@@ -36,7 +36,7 @@ def read_grid_model(params):
     wl : array_like
         Grid of model wavelengths in A
     flux : array_like
-        Corresponding continuum-normalized flux densities
+        Corresponding flux densities
     """
     wl = np.array([], dtype = float)
     flux = np.array([], dtype = float)
