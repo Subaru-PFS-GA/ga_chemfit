@@ -3,8 +3,8 @@
 #                     DEIMOS PRESET                        #
 #                                                          #
 #   This preset adapts chemfit to the Deimos spectrograph  #
-#   data. It defines a blank spectrograph arm that can be  #
-#   updated by the user as necessary                       #
+#   data. It defines a typical spectrograph arm that can   #
+#   be  updated by the user as necessary                   #
 #                                                          #
 ############################################################
 
@@ -12,8 +12,8 @@ settings = {
     ### Spectrograph settings ###
     'arms': {
         'deimos': {
-            'FWHM': None,       # Resolution and wavelength sampling must be specified for each observation. No defaults provided
-            'wl': None,
+            'sigma': 0.583,
+            'wl': np.linspace(6690, 9310, 8192),
             'priority': 1,
         },
     },
@@ -21,4 +21,3 @@ settings = {
     ### Fitting masks ###
     'masks': copy.deepcopy(original_settings['masks']),
 }
-

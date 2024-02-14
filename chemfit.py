@@ -92,13 +92,16 @@ def initialize(*presets):
         recommended to store global parameters in the former file (versioned) and machine-specific parameters in
         the latter file (not versioned, i.e. ignored)
     """
-    global read_grid_model, read_grid_dimensions
+    global read_grid_model, read_grid_dimensions, settings
+
+    # Reset settings
+    settings = {}
 
     # Environment variables provided to the preset scripts
     env = {'script_dir': script_dir, 'np': np, 'original_settings': copy.deepcopy(settings), 'copy': copy}
 
     index = 0 # Load counter to ensure unique module names for all loaded files
-    for preset in presets:
+    for preset in ['default'] + list(presets):
         scripts = ['{}/settings/roaming/{}.py'.format(script_dir, preset), '{}/settings/local/{}.py'.format(script_dir, preset)]
         scripts = [script for script in scripts if os.path.isfile(script)]
         if len(scripts) == 0:
@@ -114,6 +117,7 @@ def initialize(*presets):
             # Update the global settings variable and make it available to the module in case it defines model read
             # functions and they need it
             settings.update(module.settings)
+            env['original_settings'] = copy.deepcopy(settings)
             module.settings = settings
 
             # Try to overwrite the model read functions with the ones stored in the module
@@ -126,7 +130,7 @@ def initialize(*presets):
             except:
                 pass
 # Load the default settings preset
-initialize('default')
+initialize()
 
 def warn(message):
     """Issue a warning. Wrapper for `warnings.warn()`

@@ -98,8 +98,7 @@ def read_grid_model(params):
 
     h = fits.open(__model_parameters[model_id])
     wl = h[1].data['Wavelength']
-    flux = h[1].data['Total flux density']
+    flux = h[1].data['Total flux density'] / h[1].data['Continuum flux density']
     h.close()
 
-    from PyAstronomy import pyasl
-    return pyasl.vactoair2(wl), flux
+    return wl, flux
