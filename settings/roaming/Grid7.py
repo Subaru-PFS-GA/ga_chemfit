@@ -9,6 +9,7 @@
 
 import os, pickle, gzip
 import scipy as scp
+import re
 
 settings = {
     ### Model grid settings ###
