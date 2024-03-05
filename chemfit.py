@@ -31,6 +31,32 @@ settings = {}
 warnings_stack = []
 warnings_messages = {}
 
+def warn(message):
+    """Issue a warning. Wrapper for `warnings.warn()`
+    
+    Add the warning message to the stack. If required, also throw the normal Python warning
+
+    Instead of storing warning messages in the stack in full, we associate unique numerical
+    identifiers with each distinct message and store them in a dictionary. The stack then
+    only contains the identifiers to save memory
+    
+    Parameters
+    ----------
+    message : str
+        Warning message
+    """
+    global warnings_stack, warnings_messages
+
+    if message not in warnings_messages:
+        warning_id = len(warnings_messages)
+        warnings_messages[message] = warning_id
+    else:
+        warning_id = warnings_messages[message]
+
+    warnings_stack += [warning_id]
+    if settings['throw_python_warnings']:
+        warnings.warn(message)
+
 def read_grid_model(params):
     """Load a specific model spectrum from the model grid
     
@@ -98,7 +124,7 @@ def initialize(*presets):
     settings = {}
 
     # Environment variables provided to the preset scripts
-    env = {'script_dir': script_dir, 'np': np, 'original_settings': copy.deepcopy(settings), 'copy': copy}
+    env = {'script_dir': script_dir, 'np': np, 'original_settings': copy.deepcopy(settings), 'copy': copy, 'warn': warn}
 
     index = 0 # Load counter to ensure unique module names for all loaded files
     for preset in ['default'] + list(presets):
@@ -131,32 +157,6 @@ def initialize(*presets):
                 pass
 # Load the default settings preset
 initialize()
-
-def warn(message):
-    """Issue a warning. Wrapper for `warnings.warn()`
-    
-    Add the warning message to the stack. If required, also throw the normal Python warning
-
-    Instead of storing warning messages in the stack in full, we associate unique numerical
-    identifiers with each distinct message and store them in a dictionary. The stack then
-    only contains the identifiers to save memory
-    
-    Parameters
-    ----------
-    message : str
-        Warning message
-    """
-    global warnings_stack, warnings_messages
-
-    if message not in warnings_messages:
-        warning_id = len(warnings_messages)
-        warnings_messages[message] = warning_id
-    else:
-        warning_id = warnings_messages[message]
-
-    warnings_stack += [warning_id]
-    if settings['throw_python_warnings']:
-        warnings.warn(message)
 
 def safe_read_grid_model(params, grid):
     """Wrapper for `read_grid_model()` that deescalates missing model errors to warnings, and
@@ -944,7 +944,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
     spline = scp.interpolate.splrep(wl[mask], flux[mask], w = ivar[mask], t = t, k = k)
     return scp.interpolate.splev(wl, spline)
 
-def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, phot):
+def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, phot, method):
     """Fit the model to the spectrum
     
     Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
@@ -985,15 +985,27 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
         uncertainty in the measurement. The dictionary may also include optional elements `reddening`
         (E(B-V), single numerical value,), and `mag_system` (one of the magnitude systems supported by
         `synphot()`, single string)
+    method : str
+        Method to determine the best-fit stellar parameters. Must correspond to a callable function of form
+        `fit_{method}(f, x, y, p0, sigma, bounds)`, where the arguments have the same meaning as those
+        used by `scipy.optimize.curve_fit()`. The callable must return 3 values: best-fit parameter values
+        in the same order as accepted by `f()`, errors in the best-fit parameter values, and a dictionary of
+        additional data from the fit (e.g. covariance matrices, MCMC chains etc)
     Returns
     -------
-    array_like
-        Covariance matrix of the fit
+    dict
+        Additional data from the fit as returned by the fitting method callable function. If
+        `settings['return_diagnostics']`, will also return detailed diagnostic data, including the observed
+        spectrum, fitting masks and the best-fit model
     """
+    # Create a dictionary to store diagnostic data in
+    global _fitter_diagnostic_storage
+    _fitter_diagnostic_storage = {}
+    diagnostic = _fitter_diagnostic_storage
 
     # This function will be passed to curve_fit() as the model callback. The <signature> comment is a placeholder
     # to be replaced with the interpretation of the function signature later
-    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator, phot = phot):
+    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator, phot = phot, diagnostic = _fitter_diagnostic_storage):
         # <signature>
 
         # Load the requested model
@@ -1002,6 +1014,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
         else:
             model_wl, model_flux = interpolator(params)
         cont = estimate_continuum(data_wl, data_flux / model_flux, data_ivar * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
+        diagnostic['model_wl'] = model_wl; diagnostic['model_flux'] = model_flux; diagnostic['model_cont'] = cont
         model_wl = model_wl[mask]; model_flux = (cont * model_flux)[mask]
 
         # Add priors
@@ -1039,7 +1052,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
     f[0] = f[0].replace('params', ', '.join(dof))
     f[0] = f[0].replace('mask', 'mask = mask')
     f[1] = f[1].replace('# <signature>', 'params = {' + ', '.join(['\'{}\': {}'.format(param, [param, initial[param]][param not in dof]) for param in initial]) + '}')
-    scope = {'priors': priors, 'phot': phot, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings, 'synphot': synphot}
+    scope = {'priors': priors, 'phot': phot, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings, 'synphot': synphot, '_fitter_diagnostic_storage': _fitter_diagnostic_storage}
     exec('\n'.join(f)[f[0].find('def'):], scope)
     f = scope['f']
 
@@ -1061,13 +1074,93 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
         index += 1
 
     # Run the optimizer and save the results in "initial" and "errors"
-    fit = scp.optimize.curve_fit(f, x, y, p0 = p0, bounds = bounds, sigma = sigma, **settings['curve_fit'])
+    # fit = mcmc_fit(f, x, y, p0 = p0, bounds = bounds, sigma = sigma)
+    fit = globals()['fit_{}'.format(method)](f, x, y, p0, sigma, bounds)
     for i, param in enumerate(dof):
         initial[param] = fit[0][i]
-        errors[param] = np.sqrt(fit[1][i,i])
-    return fit[1]
+        errors[param] = fit[1][i]
 
-def chemfit(wl, flux, ivar, initial, phot = {}):
+    # Provide diagnostic data if requested
+    if settings['return_diagnostics']:
+        fit[2]['observed'] = {'wl': wl, 'flux': flux, 'ivar': ivar}
+        fit[2]['mask'] = mask
+        fit[2]['fit'] = {'x': x, 'y': y, 'sigma': sigma, 'f': f(x, *fit[0]), 'p0': p0, 'bounds': bounds, 'dof': dof}
+        fit[2]['model'] = {'wl': diagnostic['model_wl'], 'flux': diagnostic['model_flux'], 'cont': diagnostic['model_cont']}
+        fit[2]['cost'] = (fit[2]['fit']['f'] - fit[2]['fit']['y']) ** 2.0 / fit[2]['fit']['sigma'] ** 2.0
+
+    return fit[2]
+
+def fit_gradient_descent(f, x, y, p0, sigma, bounds):
+    """Fit a 2D data series to a model using the Trust Region Reflective gradient descent algorithm
+    
+    The fit is carried out using `scipy.optimize.curve_fit()`. The covariance matrix is returned as
+    additional data
+    
+    Parameters
+    ----------
+    See the parameters of `scipy.optimize.curve_fit()`
+    
+    Returns
+    -------
+    best : array_like
+        Best-fit model parameters
+    errors : array_like
+        Errors in the best-fit model parameters
+    extra : dict
+        Dictionary with a single key, 'cov', that contains the covariance matrix of the fit
+    """
+    fit = scp.optimize.curve_fit(f, x, y, p0 = p0, sigma = sigma, bounds = bounds, **settings['gradient_descent']['curve_fit'])
+    best = fit[0]
+    errors = np.sqrt(np.diagonal(fit[1]))
+    return best, errors, {'cov': fit[1]}
+
+def fit_mcmc(f, x, y, p0, sigma, bounds):
+    """Fit a 2D data series to a model using Markov Chain Monte Carlo (MCMC) sampling
+    
+    The fit is carried out using `emcee.EnsembleSampler()`. The MCMC chains for individual walkers are
+    returned as additional data. The initial positions of the walkers are drawn from a random uniform
+    distribution, within the prescribed bounds. The best-fit parameters and their errors are calculated
+    as the median and the standard deviation of the chains after the removal of the burn-in steps
+    
+    Parameters
+    ----------
+    See the parameters of `scipy.optimize.curve_fit()`
+    
+    Returns
+    -------
+    best : array_like
+        Best-fit model parameters
+    errors : array_like
+        Errors in the best-fit model parameters
+    extra : dict
+        Dictionary with a single key, 'chain', that contains the full MCMC chains for each walker
+    """
+    try:
+        import emcee
+    except:
+        raise ImportError('emcee not installed')
+
+    # Choose initial walker positions
+    initial = []
+    for i in range(len(p0)):
+        initial += [np.random.uniform(bounds[0][i], bounds[1][i], settings['mcmc']['nwalkers'])]
+    initial = np.vstack(initial).T
+
+    def log_likelihood(p0, x, y, sigma, bounds):
+        for i in range(len(p0)):
+            if p0[i] <= bounds[0][i] or p0[i] >= bounds[1][i]:
+                return -np.inf
+        model = f(x, *p0)
+        return np.sum(scp.stats.norm.logpdf(y, model, sigma))
+
+    # Run the MCMC sampler
+    sampler = emcee.EnsembleSampler(settings['mcmc']['nwalkers'], np.shape(initial)[1], log_likelihood, args = [x, y, sigma, bounds])
+    sampler.run_mcmc(initial, settings['mcmc']['nsteps'])
+    chain = sampler.get_chain(flat = False)
+    flatchain = sampler.get_chain(flat = True)
+    return np.median(flatchain[settings['mcmc']['discard']:,:], axis = 0), np.std(flatchain[settings['mcmc']['discard']:,:], axis = 0), {'chain': chain}
+
+def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
     """Determine the stellar parameters of a star given its spectrum
     
     Parameters
@@ -1093,6 +1186,10 @@ def chemfit(wl, flux, ivar, initial, phot = {}):
         in the measurement. The dictionary may also include optional elements `reddening` (E(B-V),
         single numerical value), and `mag_system` (one of the magnitude systems supported by
         `synphot()`, single string)
+    method : str
+        Method to use for model fitting. Currently supported methods are 'gradient_descent' that
+        employs the Trust Region Reflective algorithm implemented in `scipy`, and 'mcmc' that uses
+        the MCMC sampler implemented in `emcee`
     
     Returns
     -------
@@ -1100,9 +1197,9 @@ def chemfit(wl, flux, ivar, initial, phot = {}):
         Fitting results. Dictionary with the following keys:
             'fit': Best-fit stellar parameters
             'errors': Standard errors in the best-fit parameters from the diagonal of covariance matrix
-            'cov': Full covariance matrix, ordered by `settings['fit_dof']`
             'interpolator_statistics': Interpolator statistics (see `ModelGridInterpolator().statistics`)
             'warnings': Warnings issued during the fitting process
+            'extra': Additional fit data and diagnostic data depending on the chosen fitting method
     """
     # Remember the length of pre-existing warnings stack
     warnings_stack_length = len(warnings_stack)
@@ -1150,47 +1247,14 @@ def chemfit(wl, flux, ivar, initial, phot = {}):
 
 
     # Run the main fitter
-    cov = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator, phot)
+    extra = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator, phot, method = method)
 
     # Get the texts of unique issued warnings
     warnings = np.unique(warnings_stack[warnings_stack_length:])
     inv_warnings_messages = {warnings_messages[key]: key for key in warnings_messages}
     warnings = [inv_warnings_messages[warning_id] for warning_id in warnings]
 
-    return {'fit': fit, 'errors': errors, 'cov': cov, 'interpolator_statistics': interpolator.statistics, 'warnings': warnings}
-
-def best_fit(fit, wl, flux, ivar):
-    """Generate the best-fit model spectrum based on its best-fit parameters determined with `chemfit()`
-    
-    The purpose of the function is to provide quick access to the combined observed spectrum of the star
-    and the estimated best-fit model spectrum, e.g., for plotting
-    
-    Parameters
-    ----------
-    fit : dict
-        Output of `chemfit()`
-    wl : dict
-        Spectrum wavelengths keyed by spectrograph arm, as they were provided to `chemfit()`
-    flux : dict
-        Spectrum flux densities keyed by spectrograph arm, as they were provided to `chemfit()`
-    ivar : dict
-        Spectrum weights (inverted variances) keyed by spectrograph arm, as they were provided to `chemfit()`
-    
-    Returns
-    -------
-    observed : dict
-        Combined observed spectrum of the star. The keys are 'wl' (wavelength), 'flux' (observed flux),
-        'ivar' (observation weights)
-    model : dict
-        Best-fit model spectrum. The keys are 'wl' (wavelength, same as for the observed spectrum), 'flux'
-        (model flux density without continuum correction), 'cont' (continuum correction multiplier)
-    """
-    interpolator = ModelGridInterpolator(detector_wl = wl)
-    model_wl, model_flux = interpolator(fit['fit'])
-    wl_combined, flux_combined = combine_arms(wl, flux)
-    ivar_combined = combine_arms(wl, ivar)[1]
-    cont = estimate_continuum(wl_combined, flux_combined / model_flux, ivar_combined * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
-    return {'wl': wl_combined, 'flux': flux_combined, 'ivar': ivar_combined}, {'wl': model_wl, 'cont': cont, 'flux': model_flux}
+    return {'fit': fit, 'errors': errors, 'extra': extra, 'interpolator_statistics': interpolator.statistics, 'warnings': warnings}
 
 def synphot(wl, flux, teff, bands, mag_system = settings['default_mag_system'], reddening = settings['default_reddening']):
     # Placeholder function to compute synthetic photometry (bolometric corrections). For now, this relies on the BasicATLAS routine

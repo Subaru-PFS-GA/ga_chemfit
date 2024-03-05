@@ -33,11 +33,19 @@ settings = {
     },
 
     ### Optimization parameters ###
-    'curve_fit': {
-        'absolute_sigma': True,
-        'ftol': 1e-10,
-        'gtol': 1e-10,
-        'xtol': 1e-10,
+    'return_diagnostics': True, # Return best-fit model, continuum correction and fitting masks in the chemfit.chemfit() output
+    'gradient_descent': {
+        'curve_fit': {
+            'absolute_sigma': False,
+            'ftol': 1e-10,
+            'gtol': 1e-10,
+            'xtol': 1e-10,
+        },
+    },
+    'mcmc': {
+        'nwalkers': 32,
+        'nsteps': 5000,
+        'discard': 300,
     },
     'cont_pix': 165,
     'spline_order': 3,
