@@ -46,6 +46,7 @@ settings = {
         'nwalkers': 32,
         'nsteps': 5000,
         'discard': 300,
+        'initial': 'gradient_descent',
     },
     'cont_pix': 165,
     'spline_order': 3,

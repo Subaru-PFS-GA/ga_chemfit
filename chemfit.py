@@ -1140,10 +1140,63 @@ def fit_mcmc(f, x, y, p0, sigma, bounds):
     except:
         raise ImportError('emcee not installed')
 
+    def mcmc_convergence(chain, c = 5):
+        """Calculate the convergence parameters of an MCMC chain
+        
+        This function takes the chain output by emcee, and computes the autocorrelation length and the
+        Geweke drift for each dimension of the parameter space
+        
+        Parameters
+        ----------
+        chain : array_like
+            MCMC chain as returned by `emcee.EnsembleSampler().get_chain()`
+        c : number, optional
+            Step size for the autocorrelation window search (see `emcee.autocorr.integrated_time()`)
+        
+        Returns
+        -------
+        autocorr : array_like
+            2D array with autocorrelation lengths for each parameter (first dimension) and each walker
+            (second dimension), expressed as the number of autocorrelation lengths contained within the
+            provided chain. Larger values indicate better convergence (emcee documentaion recommends
+            requiring the minimum value of this array to exceed 50)
+        geweke : array_like
+            Array of Geweke drifts (z-scores) for each parameter. Larger values indicate poor convergence
+        """
+        nsteps, nwalkers, ndim = np.shape(chain)
+        autocorr = np.zeros([ndim, nwalkers])
+        geweke = np.zeros(ndim)
+        for i in range(ndim):
+            for w in range(nwalkers):
+                f = emcee.autocorr.function_1d(chain[:, w, i])
+                taus = 2.0 * np.cumsum(f) - 1.0
+                windows = emcee.autocorr.auto_window(taus, c)
+                tau = taus[windows]
+                autocorr[i,w] = nsteps / tau
+
+            flatchain = chain.reshape(chain.shape[0] * chain.shape[1], -1)
+            a = flatchain[:len(flatchain) // 4, i]
+            b = flatchain[-len(flatchain) // 4:, i]
+            geweke[i] = (np.mean(a) - np.mean(b)) / (np.var(a) + np.var(b)) ** 0.5
+
+        return autocorr, geweke
+
     # Choose initial walker positions
+    if settings['mcmc']['initial'] == 'gradient_descent':
+        best, errors, extra_gd = fit_gradient_descent(f, x, y, p0, sigma, bounds)
     initial = []
     for i in range(len(p0)):
-        initial += [np.random.uniform(bounds[0][i], bounds[1][i], settings['mcmc']['nwalkers'])]
+        # Uniformly random initial walker positions
+        if settings['mcmc']['initial'] == 'uniform':
+            initial += [np.random.uniform(bounds[0][i], bounds[1][i], settings['mcmc']['nwalkers'])]
+        # Gaussian initial positions based on gradient descent
+        elif settings['mcmc']['initial'] == 'gradient_descent':
+            initial += [np.full(settings['mcmc']['nwalkers'], np.nan)]
+            while np.count_nonzero(np.isnan(initial[-1])) > 0 or np.min(initial[-1]) < bounds[0][i] or np.max(initial[-1]) > bounds[1][i]:
+                initial[-1] = np.random.normal(best[i], errors[i], settings['mcmc']['nwalkers'])
+        else:
+            raise ValueError('Unrecognized initial walker distribution {}'.format(settings['mcmc']['initial']))
+
     initial = np.vstack(initial).T
 
     def log_likelihood(p0, x, y, sigma, bounds):
@@ -1157,8 +1210,14 @@ def fit_mcmc(f, x, y, p0, sigma, bounds):
     sampler = emcee.EnsembleSampler(settings['mcmc']['nwalkers'], np.shape(initial)[1], log_likelihood, args = [x, y, sigma, bounds])
     sampler.run_mcmc(initial, settings['mcmc']['nsteps'])
     chain = sampler.get_chain(flat = False)
-    flatchain = sampler.get_chain(flat = True)
-    return np.median(flatchain[settings['mcmc']['discard']:,:], axis = 0), np.std(flatchain[settings['mcmc']['discard']:,:], axis = 0), {'chain': chain}
+    autocorr, geweke = mcmc_convergence(chain)
+    flatchain = chain[settings['mcmc']['discard']:,:,:].reshape((chain.shape[0] - settings['mcmc']['discard']) * chain.shape[1], -1)
+    extra = {'chain': chain, 'initial': initial, 'autocorr': autocorr, 'geweke': geweke}
+    if settings['mcmc']['initial'] == 'gradient_descent':
+        extra['gradient_descent'] = extra_gd
+        extra['gradient_descent']['fit'] = best
+        extra['gradient_descent']['errors'] = errors
+    return np.median(flatchain, axis = 0), np.std(flatchain, axis = 0), extra
 
 def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
     """Determine the stellar parameters of a star given its spectrum
