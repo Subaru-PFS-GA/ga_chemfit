@@ -322,7 +322,7 @@ def get_bin_edges(bins):
 
     return np.concatenate([[bins[0] - (bins[1] - bins[0]) / 2], (bins[1:] + bins[:-1]) / 2, [bins[-1] + (bins[-1] - bins[-2]) / 2]])
 
-def convolution_weights(bins, x, sigma, clip = 5.0, mode = 'window', max_size = 10e6, flush_cache = False):
+def convolution_weights(bins, x, sigma, clip = 5.0, mode = 'window', max_size = 15e6, flush_cache = False):
     """Calculate the complete convolution matrix for an arbitrary flux density spectrum
     and an arbitrary set of detector bins
     
@@ -647,8 +647,12 @@ def simulate_observation(wl, flux, detector_wl = None, mask_unmodelled = True, c
     detector_flux = {}
     for arm in detector_wl:
         if 'sigma' not in settings['arms'][arm]:
-            settings['arms'][arm]['sigma'] = settings['arms'][arm]['FWHM'] / (2 * np.sqrt(2 * np.log(2)))
-        C = convolution_weights(detector_wl[arm], wl, settings['arms'][arm]['sigma'], clip = clip)
+            sigma = settings['arms'][arm]['FWHM'] / (2 * np.sqrt(2 * np.log(2)))
+        else:
+            if 'FWHM' in settings['arms'][arm]:
+                raise ValueError('Both FWHM and sigma provided for arm {}'.format(arm))
+            sigma = settings['arms'][arm]['sigma']
+        C = convolution_weights(detector_wl[arm], wl, sigma, clip = clip)
         detector_flux[arm] = C * flux
         # Remove wavelengths that exceed the modelled range
         if mask_unmodelled:
