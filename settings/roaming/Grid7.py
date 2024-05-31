@@ -16,7 +16,7 @@ settings = {
     'griddir': None,    # Model directory must be specified in local settings
 
     ### Which parameters to fit? ###
-    'fit_dof': ['zscale', 'alpha', 'teff', 'logg'],
+    'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'redshift'],
 }
 
 def read_grid_model(params):
@@ -90,7 +90,15 @@ def read_grid_model(params):
     # Since Grid7/GridIE models do not have continua, we attach Planck's law blackbody continua to them as a temporary measure
     bb = 2 * scp.constants.h * scp.constants.c ** 2.0 / (wl * 1e-10) ** 5 * (np.exp(scp.constants.h * scp.constants.c / ((wl * 1e-10) * scp.constants.k * params['teff'])) - 1) ** -1
 
-    return wl, flux * bb
+    # Implement redshift
+    redshift_range = [np.min(read_grid_dimensions()['redshift']), np.max(read_grid_dimensions()['redshift'])]
+    wl_range = [np.min(wl * (1 + redshift_range[1] * 1e3 / scp.constants.c)), np.max(wl * (1 + redshift_range[0] * 1e3 / scp.constants.c))]
+    wl_redshifted = wl * (1 + params['redshift'] * 1e3 / scp.constants.c)
+    flux = np.interp(wl, wl_redshifted, flux)
+    mask = (wl >= wl_range[0]) & (wl <= wl_range[1])
+    wl = wl[mask]; flux = flux[mask]; bb = bb[mask]
+
+    return wl, flux #* bb
 
 def read_grid_dimensions(flush_cache = False):
     """Determine the available dimensions in the model grid and the grid points
@@ -137,7 +145,12 @@ def read_grid_dimensions(flush_cache = False):
                 grid['alpha'] += [breakdown[3]]
 
     grid = {axis: np.unique(grid[axis]) for axis in grid}
+
+    # Add redshifts
+    grid['redshift'] = np.linspace(-200, 200, 50)
+
     f = open(cache, 'wb')
     pickle.dump(grid, f)
     f.close()
+
     return grid
