@@ -701,7 +701,7 @@ class ModelGridInterpolator:
             'num_interpolators_built': Total number of interpolator objects constructed
                                        (scipy.interpolate.RegularGridInterpolator)
     """
-    def __init__(self, resample = True, detector_wl = None, synphot_bands = [], mag_system = settings['default_mag_system'], reddening = settings['default_reddening'], max_models = 1000):
+    def __init__(self, resample = True, detector_wl = None, synphot_bands = [], mag_system = settings['default_mag_system'], reddening = settings['default_reddening'], max_models = 10000):
         """
         Parameters
         ----------
@@ -827,7 +827,7 @@ class ModelGridInterpolator:
         # Build the interpolator
         subgrid_ordered = [subgrid[key] for key in sorted(list(subgrid.keys()))]
         meshgrid = np.meshgrid(*subgrid_ordered, indexing = 'ij')
-        spectra = np.vectorize(lambda *x: self._loaded['|'.join(np.array(x).astype(str))], signature = '(),(),(),()->(n)')(*meshgrid)
+        spectra = np.vectorize(lambda *x: self._loaded['|'.join(np.array(x).astype(str))], signature = ','.join(['()'] * len(self._grid)) + '->(n)')(*meshgrid)
         setattr(self, '_interpolator', scp.interpolate.RegularGridInterpolator(subgrid_ordered, spectra))
         self._interpolator_models = required_models
         self.statistics['num_interpolators_built'] += 1
@@ -1195,9 +1195,7 @@ def fit_mcmc(f, x, y, p0, sigma, bounds):
             initial += [np.random.uniform(bounds[0][i], bounds[1][i], settings['mcmc']['nwalkers'])]
         # Gaussian initial positions based on gradient descent
         elif settings['mcmc']['initial'] == 'gradient_descent':
-            initial += [np.full(settings['mcmc']['nwalkers'], np.nan)]
-            while np.count_nonzero(np.isnan(initial[-1])) > 0 or np.min(initial[-1]) < bounds[0][i] or np.max(initial[-1]) > bounds[1][i]:
-                initial[-1] = np.random.normal(best[i], errors[i], settings['mcmc']['nwalkers'])
+            initial += [scp.stats.truncnorm.rvs(loc = best[i], scale = errors[i], a = (bounds[0][i] - best[i]) / errors[i], b = (bounds[1][i] - best[i]) / errors[i], size = settings['mcmc']['nwalkers'])]
         else:
             raise ValueError('Unrecognized initial walker distribution {}'.format(settings['mcmc']['initial']))
 
@@ -1212,7 +1210,7 @@ def fit_mcmc(f, x, y, p0, sigma, bounds):
 
     # Run the MCMC sampler
     sampler = emcee.EnsembleSampler(settings['mcmc']['nwalkers'], np.shape(initial)[1], log_likelihood, args = [x, y, sigma, bounds])
-    sampler.run_mcmc(initial, settings['mcmc']['nsteps'])
+    sampler.run_mcmc(initial, settings['mcmc']['nsteps'], progress = settings['mcmc']['progress'])
     chain = sampler.get_chain(flat = False)
     autocorr, geweke = mcmc_convergence(chain)
     flatchain = chain[settings['mcmc']['discard']:,:,:].reshape((chain.shape[0] - settings['mcmc']['discard']) * chain.shape[1], -1)

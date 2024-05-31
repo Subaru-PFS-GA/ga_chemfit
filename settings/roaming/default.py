@@ -47,6 +47,7 @@ settings = {
         'nsteps': 5000,
         'discard': 300,
         'initial': 'gradient_descent',
+        'progress': True,
     },
     'cont_pix': 165,
     'spline_order': 3,
