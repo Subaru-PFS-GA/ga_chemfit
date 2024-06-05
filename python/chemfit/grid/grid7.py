@@ -21,7 +21,7 @@ class Grid7(Grid):
     def get_default_settings(self, original_settings = {}):
         return {
             ### Model grid settings ###
-            'griddir': None,    # Model directory must be specified in local settings
+            'griddir': os.path.expandvars('${CHEMFIT_GRIDDIR}'),    # Model directory must be specified in local settings
 
             ### Which parameters to fit? ###
             'fit_dof': ['zscale', 'alpha', 'teff', 'logg'],
