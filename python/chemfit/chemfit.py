@@ -615,6 +615,15 @@ class Chemfit():
             return wl, flux
         else:
             return wl
+        
+    def create_interpolator(self, resample = True, detector_wl = None, synphot_bands = [], mag_system = None, reddening = None, max_models = 10000):
+        return ModelGridInterpolator(self,
+                                     resample=resample,
+                                     detector_wl=detector_wl,
+                                     synphot_bands=synphot_bands,
+                                     mag_system=mag_system,
+                                     reddening=reddening,
+                                     max_models=max_models)
 
     def simulate_observation(self, wl, flux, detector_wl = None, mask_unmodelled = True, clip = 5, combine = True):
         """Simulate observation of the model spectrum by a spectrograph
@@ -790,8 +799,179 @@ class Chemfit():
         t = wl[mask][np.round(np.linspace(0, len(wl[mask]), int(len(wl[mask]) / npix))).astype(int)[1:-1]]
         spline = scp.interpolate.splrep(wl[mask], flux[mask], w = ivar[mask], t = t, k = k)
         return scp.interpolate.splev(wl, spline)
+    
+    def get_pack_params_fun(self, dof):
+        def pack_params(params):
+            return np.array([ params[p] for p in dof ])
+        
+        def unpack_params(x):
+            return { p: x[i] for i, p in enumerate(dof) }
+        
+        def pack_bounds(grid):
+            return [ [ np.min(grid[axis]), np.max(grid[axis]) ] for axis in dof ]
+        
+        return pack_params, unpack_params, pack_bounds
 
-    def fit_model(self, wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, phot, method):
+    def get_log_likelihood_fun(self,  wl, flux, ivar, priors, dof, mask, interpolator, phot, diagnostic):
+
+        pack_params, unpack_params, pack_bounds = self.get_pack_params_fun(dof)
+        bounds = np.array(pack_bounds(interpolator._grid)).T
+
+        # Evaluate the log of (likelihood * priors) given a set of model parameters
+        def log_likelihood(x):
+
+            # Likelihood is negative infinity if any of the parameters are outside the bounds
+            if np.any(x < bounds[0]) or np.any(bounds[1] < x):
+                return -np.inf
+
+            params = unpack_params(x)
+
+            if len(interpolator._synphot_bands) != 0:
+                model_wl, model_flux, model_phot = interpolator(params)
+            else:
+                model_wl, model_flux = interpolator(params)
+
+            cont = self.estimate_continuum(wl, flux / model_flux, ivar * model_flux ** 2,
+                                           npix = self.settings['cont_pix'],
+                                           k = self.settings['spline_order'])
+            
+            diagnostic['model_wl'] = model_wl
+            diagnostic['model_flux'] = model_flux
+            diagnostic['model_cont'] = cont
+
+            log_l = -0.5 * np.sum((flux[mask] - (cont * model_flux)[mask]) ** 2 * ivar[mask])
+
+            # Add priors
+            # TODO
+
+            # Add photometric colors
+            # TODO
+
+            return log_l
+        
+        return log_likelihood
+    
+    def get_fitting_mask(self, wl, flux, ivar, initial, dof, masks, interpolator):
+        # Construct  and apply the fitting mask by superimposing the masks of individual parameters and removing bad pixels
+        mask = np.full(len(wl), False)
+        for param in dof:
+            mask |= masks[param]
+        mask &= (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
+        mask &= ~np.isnan(interpolator(initial)[1])
+
+        return mask
+
+    def fit_model(self, wl, flux, ivar, initial, priors, dof, masks, interpolator, phot, method):
+        """Fit the model to the spectrum
+        
+        Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
+        the appropriate signature, defines the initial guesses and bounds for all free parameters, applies
+        parameter masks and initiates the optimization routine
+
+        The results of the fit and the associated errors are placed in the `initial` and `errors` arguments
+        
+        Parameters
+        ----------
+        wl : array_like
+            Spectrum wavelengths
+        flux : array_like
+            Spectrum flux densities
+        ivar : array_like
+            Spectrum weights (inverted variances)
+        initial : dict
+            Initial guesses for the stellar parameters, keyed by parameter. The updated parameters after the
+            optimization are stored in this dictionary as well
+        priors : dict of 2-element tuples
+            Prior estimates of the stellar parameters, keyed by parameter. Each element is a tuple with the
+            first element storing the best estimate and the second element storing its uncertainty. All tuples
+            of length other than 2 are ignored
+        dof : list
+            List of parameters to be optimized. The rest are treated as fixed to their initial values
+        masks : dict
+            Dictionary of boolean masks, keyed by stellar parameters. The masks determine which wavelengths are
+            included in the fit for each parameter. If multiple parameters are fit simultaneously, the masks are
+            logically added (or)
+        interpolator : ModelGridInterpolator
+            Model grid interpolator object that will be used to construct models during optimization
+        phot : dict
+            Photometric colors of the star. Each color is keyed by `BAND1#BAND2`, where `BAND1` and `BAND2` are
+            the transmission profile filenames of the filters, as required by `synphot()`. Each element is a
+            2-element tuple, where the first element is the measured color, and the second element is the
+            uncertainty in the measurement. The dictionary may also include optional elements `reddening`
+            (E(B-V), single numerical value,), and `mag_system` (one of the magnitude systems supported by
+            `synphot()`, single string)
+        method : str
+            Method to determine the best-fit stellar parameters. Must correspond to a callable function of form
+            `fit_{method}(f, x, y, p0, sigma, bounds)`, where the arguments have the same meaning as those
+            used by `scipy.optimize.curve_fit()`. The callable must return 3 values: best-fit parameter values
+            in the same order as accepted by `f()`, errors in the best-fit parameter values, and a dictionary of
+            additional data from the fit (e.g. covariance matrices, MCMC chains etc)
+        Returns
+        -------
+        dict
+            Additional data from the fit as returned by the fitting method callable function. If
+            `settings['return_diagnostics']`, will also return detailed diagnostic data, including the observed
+            spectrum, fitting masks and the best-fit model
+        """
+
+        # Create a dictionary to store diagnostic data in
+        # TODO: this should be a trace object
+        global _fitter_diagnostic_storage
+        _fitter_diagnostic_storage = {}
+        diagnostic = _fitter_diagnostic_storage
+
+        # Construct  and apply the fitting mask by superimposing the masks of individual parameters and removing bad pixels
+        mask = self.get_fitting_mask(wl, flux, ivar, initial, dof, masks, interpolator)
+
+        # Define p0 and bounds. The bounds are set to the model grid range stored in the interpolator object
+        pack_params, unpack_params, pack_bounds = self.get_pack_params_fun(dof)
+        p0 = pack_params(initial)
+        bounds = pack_bounds(interpolator._grid)
+
+        llh = self.get_log_likelihood_fun(wl, flux, ivar,
+                                          priors,
+                                          dof,
+                                          mask,
+                                          interpolator,
+                                          phot,
+                                          diagnostic)
+        
+        # Run the optimizer and save the results in "initial" and "errors"
+        # fit = mcmc_fit(f, x, y, p0 = p0, bounds = bounds, sigma = sigma)
+        if method == 'mcmc':
+            best, error, extra = self._fit_mcmc(llh, p0, bounds)
+        elif method == 'gradient_descent':
+            best, error, extra = self._fit_gradient_descent(lambda x: -llh(x), p0, bounds)
+        else:
+            raise NotImplementedError()
+        
+        # Extract results
+        best = unpack_params(best)
+        errors = unpack_params(error)
+
+        # Provide diagnostic data if requested
+        if self.settings['return_diagnostics']:
+            extra['observed'] = {'wl': wl, 'flux': flux, 'ivar': ivar}
+            extra['mask'] = mask
+            extra['fit'] = {
+                # TODO: evaluate best model
+                # 'x': x, 'y': y, 'sigma': sigma
+                # 'f': f(x, *fit[0])
+                'p0': p0,
+                'bounds': bounds,
+                'dof': dof
+            }
+            
+            extra['model'] = {
+                'wl': diagnostic['model_wl'],
+                'flux': diagnostic['model_flux'],
+                'cont': diagnostic['model_cont']
+            }
+
+        return best, errors, extra
+
+    # TODO: DELETE
+    def fit_model_aside(self, wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, phot, method):
         """Fit the model to the spectrum
         
         Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
@@ -936,8 +1116,27 @@ class Chemfit():
             fit[2]['cost'] = (fit[2]['fit']['f'] - fit[2]['fit']['y']) ** 2.0 / fit[2]['fit']['sigma'] ** 2.0
 
         return fit[2]
+    
+    def _fit_gradient_descent(self, f, p0, bounds):
 
-    def fit_gradient_descent(self, f, x, y, p0, sigma, bounds):
+        # TODO: the default method of minimize returns the inverse Hessian
+        #       but this is not the case with methods such as Nelder-Mead
+        #       use some differentiation lib here to get the Hessian in those
+        #       cases
+
+        # TODO: Add optimizer options from settings
+
+        res = scp.optimize.minimize(f, p0, bounds = bounds)
+        best = res.x
+        cov = res.hess_inv.todense()
+        error = np.sqrt(np.diag(cov))
+        cost = res.fun
+
+        return best, error, { 'cov': cov, 'cost': cost }
+
+    # TODO: DELETE
+    #       This uses curve_fit which is too high-level to finely control the optimization
+    def fit_gradient_descent_aside(self, f, x, y, p0, sigma, bounds):
         """Fit a 2D data series to a model using the Trust Region Reflective gradient descent algorithm
         
         The fit is carried out using `scipy.optimize.curve_fit()`. The covariance matrix is returned as
@@ -960,8 +1159,106 @@ class Chemfit():
         best = fit[0]
         errors = np.sqrt(np.diagonal(fit[1]))
         return best, errors, {'cov': fit[1]}
+    
+    def _init_mcmc_gradient_descent(self, best, errors, bounds):
+        initial = []
+        for i in range(len(best)):
+            # Gaussian initial positions based on gradient descent
+            v = scp.stats.truncnorm.rvs(loc = best[i], scale = errors[i],
+                                        a = (bounds[i][0] - best[i]) / errors[i],
+                                        b = (bounds[i][1] - best[i]) / errors[i],
+                                        size = self.settings['mcmc']['nwalkers'])
+            initial.append(v)
+        return np.vstack(initial).T
+    
+    def _init_mcmc_uniform(self, p0, bounds):
+        initial = []
+        for i in range(len(p0)):
+            # Uniformly random initial walker positions):
+            v = np.random.uniform(bounds[0][i], bounds[1][i], self.settings['mcmc']['nwalkers'])
+            initial.append(v)
+        return np.vstack(initial).T
+    
+    def _mcmc_convergence(self, chain, c = 5):
+        """Calculate the convergence parameters of an MCMC chain
+        
+        This function takes the chain output by emcee, and computes the autocorrelation length and the
+        Geweke drift for each dimension of the parameter space
+        
+        Parameters
+        ----------
+        chain : array_like
+            MCMC chain as returned by `emcee.EnsembleSampler().get_chain()`
+        c : number, optional
+            Step size for the autocorrelation window search (see `emcee.autocorr.integrated_time()`)
+        
+        Returns
+        -------
+        autocorr : array_like
+            2D array with autocorrelation lengths for each parameter (first dimension) and each walker
+            (second dimension), expressed as the number of autocorrelation lengths contained within the
+            provided chain. Larger values indicate better convergence (emcee documentaion recommends
+            requiring the minimum value of this array to exceed 50)
+        geweke : array_like
+            Array of Geweke drifts (z-scores) for each parameter. Larger values indicate poor convergence
+        """
 
-    def fit_mcmc(self, f, x, y, p0, sigma, bounds):
+        import emcee
+
+        nsteps, nwalkers, ndim = np.shape(chain)
+        autocorr = np.zeros([ndim, nwalkers])
+        geweke = np.zeros(ndim)
+        for i in range(ndim):
+            for w in range(nwalkers):
+                f = emcee.autocorr.function_1d(chain[:, w, i])
+                taus = 2.0 * np.cumsum(f) - 1.0
+                windows = emcee.autocorr.auto_window(taus, c)
+                tau = taus[windows]
+                autocorr[i,w] = nsteps / tau
+
+            flatchain = chain.reshape(chain.shape[0] * chain.shape[1], -1)
+            a = flatchain[:len(flatchain) // 4, i]
+            b = flatchain[-len(flatchain) // 4:, i]
+            geweke[i] = (np.mean(a) - np.mean(b)) / (np.var(a) + np.var(b)) ** 0.5
+
+        return autocorr, geweke
+    
+    def _fit_mcmc(self, log_likelihood, p0, bounds):
+        try:
+            import emcee
+        except:
+            raise ImportError('emcee not installed')
+        
+        # Choose initial walker positions
+        if self.settings['mcmc']['initial'] == 'gradient_descent':
+            best, errors, extra_gd = self._fit_gradient_descent(lambda x: -log_likelihood(x), p0, bounds)
+            initial = self._init_mcmc_gradient_descent(best, errors, bounds)
+        elif self.settings['mcmc']['initial'] == 'uniform':
+            initial = self._init_mcmc_gradient_uniform(p0, bounds)
+        
+        # Run the MCMC sampler
+        sampler = emcee.EnsembleSampler(self.settings['mcmc']['nwalkers'],
+                                        np.shape(initial)[1],
+                                        log_likelihood,
+                                        args = [])
+        
+        sampler.run_mcmc(initial, self.settings['mcmc']['nsteps'], progress = self.settings['mcmc']['progress'])
+        chain = sampler.get_chain(flat = False)
+        
+        autocorr, geweke = self._mcmc_convergence(chain)
+        flatchain = chain[self.settings['mcmc']['discard']:,:,:].reshape((chain.shape[0] - self.settings['mcmc']['discard']) * chain.shape[1], -1)
+        extra = {'chain': chain, 'initial': initial, 'autocorr': autocorr, 'geweke': geweke}
+        
+        if self.settings['mcmc']['initial'] == 'gradient_descent':
+            extra['gradient_descent'] = extra_gd
+            extra['gradient_descent']['fit'] = best
+            extra['gradient_descent']['errors'] = errors
+        
+        # TODO: Fix these statistics. Either calculate median and quantiles or
+        #       calculate variance around median
+        return np.median(flatchain, axis = 0), np.std(flatchain, axis = 0), extra
+
+    def fit_mcmc_aside(self, f, x, y, p0, sigma, bounds):
         """Fit a 2D data series to a model using Markov Chain Monte Carlo (MCMC) sampling
         
         The fit is carried out using `emcee.EnsembleSampler()`. The MCMC chains for individual walkers are
@@ -1122,7 +1419,7 @@ class Chemfit():
             mag_system = phot['mag_system']
         else:
             mag_system = self.settings['default_mag_system']
-        interpolator = ModelGridInterpolator(detector_wl = wl, synphot_bands = synphot_bands, reddening = reddening, mag_system = mag_system)
+        interpolator = self.create_interpolator(detector_wl = wl, synphot_bands = synphot_bands, reddening = reddening, mag_system = mag_system)
 
         # Get the fitting masks for each parameter
         masks = {}
@@ -1145,13 +1442,8 @@ class Chemfit():
         # Run the continuum fitter once to give it a chance to update the fitting masks if it needs to
         cont = self.estimate_continuum(wl_combined, flux_combined, ivar_combined, npix = self.settings['cont_pix'], k = self.settings['spline_order'], masks = masks)
 
-        # Preliminary setup
-        fit = {param: np.atleast_1d(initial[param])[0] for param in initial}       # Initial guesses for the fitter
-        errors = {}                                                                # Placeholder for fitting errors
-
-
         # Run the main fitter
-        extra = self.fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(self.settings['fit_dof']), errors, masks, interpolator, phot, method = method)
+        fit, errors, extra = self.fit_model(wl_combined, flux_combined, ivar_combined, initial, None, np.atleast_1d(self.settings['fit_dof']), masks, interpolator, phot, method = method)
 
         # Get the texts of unique issued warnings
         warnings = np.unique(self.warnings_stack[warnings_stack_length:])

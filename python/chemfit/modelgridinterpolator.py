@@ -1,3 +1,7 @@
+import numpy as np
+import scipy as scp
+import itertools
+
 class ModelGridInterpolator():
     """Handler class for interpolating the model grid to arbitrary stellar parameters
     
@@ -17,7 +21,7 @@ class ModelGridInterpolator():
             'num_interpolators_built': Total number of interpolator objects constructed
                                     (scipy.interpolate.RegularGridInterpolator)
     """
-    def __init__(self, settings, resample = True, detector_wl = None, synphot_bands = [], mag_system = None, reddening = None, max_models = 10000):
+    def __init__(self, chemfit, resample = True, detector_wl = None, synphot_bands = [], mag_system = None, reddening = None, max_models = 10000):
         """
         Parameters
         ----------
@@ -48,36 +52,43 @@ class ModelGridInterpolator():
             less frequent disk access (and hence faster performance) but higher memory usage
         """
 
-        mag_system = mag_system if mag_system is not None else settings['default_mag_system']
-        reddening = reddening if reddening is not None else settings['default_reddening']
+        self._chemfit = chemfit
+
+        mag_system = mag_system if mag_system is not None else chemfit.settings['default_mag_system']
+        reddening = reddening if reddening is not None else chemfit.settings['default_reddening']
 
         # Populate detector_wl if not given
         if resample:
             if detector_wl is None:
-                detector_wl = {arm: settings['arms'][arm]['wl'] for arm in settings['arms']}
+                detector_wl = {arm: chemfit.settings['arms'][arm]['wl'] for arm in chemfit.settings['arms']}
             elif type(detector_wl) is list:
-                detector_wl = {arm: settings['arms'][arm]['wl'] for arm in detector_wl}
-            setattr(self, '_detector_wl', detector_wl)
-        setattr(self, '_resample', resample)
+                detector_wl = {arm: chemfit.settings['arms'][arm]['wl'] for arm in detector_wl}
+            self._detector_wl = detector_wl
+        self._resample = resample
 
         # Load grid dimensions
-        setattr(self, '_grid', read_grid_dimensions())
+        self._grid = chemfit.grid.read_grid_dimensions()
 
         # Loaded models
-        setattr(self, '_loaded', {})
-        setattr(self, '_loaded_ordered', [])
-        setattr(self, '_max_models', max_models)
+        self._loaded =  {}
+        self._loaded_ordered = []
+        self._max_models = max_models
 
         # Models embedded into the current interpolator
-        setattr(self, '_interpolator_models', set())
+        self._interpolator_models = set()
 
         # Synthetic photometry parameters
-        setattr(self, '_synphot_bands', synphot_bands)
-        setattr(self, '_mag_system', mag_system)
-        setattr(self, '_reddening', reddening)
+        self._synphot_bands = synphot_bands
+        self._mag_system = mag_system
+        self._reddening = reddening
 
         # Holders of statistical information
-        setattr(self, 'statistics', {'num_models_used': 0, 'num_models_loaded': 0, 'num_interpolations': 0, 'num_interpolators_built': 0})
+        self.statistics = {
+            'num_models_used': 0,
+            'num_models_loaded': 0,
+            'num_interpolations': 0,
+            'num_interpolators_built': 0
+        }
 
     def _build_interpolator(self, x):
         # Make sure x has the right dimensions
@@ -120,14 +131,14 @@ class ModelGridInterpolator():
             params = np.array(model.split('|')).astype(float)
             keys = sorted(list(x.keys()))
             params = {keys[i]: params[i] for i in range(len(keys))}
-            wl, flux = safe_read_grid_model(params, self._grid)
+            wl, flux = self._chemfit.safe_read_grid_model(params)
 
             # Carry out synthetic photometry
             colors = np.zeros(len(self._synphot_bands))
             if len(self._synphot_bands) != 0:
                 if 'teff' not in params:
                     raise ValueError('The model grid must have "teff" as one of the axes to compute synthetic photometry')
-                phot = synphot(wl, flux, params['teff'], np.unique(self._synphot_bands), mag_system = self._mag_system, reddening = self._reddening)
+                phot = self._chemfit.synphot(wl, flux, params['teff'], np.unique(self._synphot_bands), mag_system = self._mag_system, reddening = self._reddening)
                 for i, color in enumerate(self._synphot_bands):
                     if np.isnan(phot[color[0]]) or np.isnan(phot[color[1]]):
                         raise ValueError('Could not calculate synthetic color {} for model {}'.format(color, params))
@@ -135,7 +146,7 @@ class ModelGridInterpolator():
                     colors[i] = phot[color[1]] - phot[color[0]]
 
             if self._resample:
-                wl, flux = simulate_observation(wl, flux, self._detector_wl)
+                wl, flux = self._chemfit.simulate_observation(wl, flux, self._detector_wl)
             try:
                 self._wl
             except:
