@@ -231,7 +231,7 @@ def read_grid_dimensions(flush_cache = False):
     grid = {'teff': [], 'logg': [], 'zscale': [], 'alpha': []}
 
     # Recursively collect and parse the filenames of all *.bin.gz models
-    for root, subdirs, files in os.walk(settings['griddir']):
+    for root, subdirs, files in os.walk(settings['griddir'], followlinks = True):
         for file in files:
             if file[-7:].lower() == '.bin.gz':
                 breakdown = list(re.findall('t([0-9]{4})g([_-][0-9]{2})f([_-][0-9]{2})a([_-][0-9]{2})\.', file.replace('a_00a', 'a'))[0])
