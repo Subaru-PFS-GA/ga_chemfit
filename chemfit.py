@@ -59,6 +59,9 @@ def warn(message):
 
 def read_grid_model(params, grid):
     """Load a specific model spectrum from the model grid
+
+    All models within the same model grid are expected to have the same wavelength
+    sampling
     
     This function definition is a template. The actual implementation is deferred to the
     settings preset files
@@ -77,6 +80,40 @@ def read_grid_model(params, grid):
         Grid of model wavelengths in A
     flux : array_like
         Corresponding flux densities in wavelength space in arbitrary units
+    meta : dict
+        Dictionary with additional model data that will be made available to the model
+        preprocessor
+    """
+    raise NotImplementedError()
+
+def preprocess_grid_model(wl, flux, params, meta):
+    """Preprocess a model spectrum
+
+    The purpose of the preprocessor is to apply the effect of virtual degrees of freedom
+    to the model spectrum. If additional model data are required to do that, they may be
+    loaded by `read_grid_model()` and returned as the `meta` argument, which is made
+    available to the preprocessor
+    
+    This function definition is a template. The actual implementation is deferred to the
+    settings preset files
+    
+    Parameters
+    ----------
+    wl : array_like
+        Grid of model wavelengths in A, as loaded by `read_grid_model()`
+    flux : array_like
+        Corresponding flux densities in wavelength space in arbitrary units, as loaded by
+        `read_grid_model()`
+    params : dict
+        Parameters of the model, including both real and virtual degrees of freedom
+    meta : dict
+        Dictionary with additional model data, as loaded by `read_grid_model()`
+    
+    Returns
+    -------
+    flux : array_like
+        Processed flux. The flux array must be sampled over the same wavelengths as the
+        original model (i.e. the wavelength array in `wl`)
     """
     raise NotImplementedError()
 
@@ -120,7 +157,7 @@ def initialize(*presets):
         recommended to store global parameters in the former file (versioned) and machine-specific parameters in
         the latter file (not versioned, i.e. ignored)
     """
-    global read_grid_model, read_grid_dimensions, settings
+    global read_grid_model, read_grid_dimensions, preprocess_grid_model, settings
 
     # Reset settings
     settings = {}
@@ -155,6 +192,10 @@ def initialize(*presets):
                 pass
             try:
                 read_grid_dimensions = module.read_grid_dimensions
+            except:
+                pass
+            try:
+                preprocess_grid_model = module.preprocess_grid_model
             except:
                 pass
 # Load the default settings preset
@@ -694,25 +735,34 @@ class ModelGridInterpolator:
         setattr(self, 'statistics', {'num_models_used': 0, 'num_models_loaded': 0, 'num_interpolations': 0, 'num_interpolators_built': 0})
 
     def _build_interpolator(self, x):
-        # Make sure x has the right dimensions
-        if set(x.keys()) != set(self._grid.keys()):
+        # Separate out real and virtual grid dimensions
+        virtual_x = {}; real_x = {}
+        for key in x:
+            if key in settings['virtual_dof']:
+                virtual_x[key] = x[key]
+            else:
+                real_x[key] = x[key]
+
+        # Make sure real_x has the right dimensions
+        if set(real_x.keys()) != set(list(self._grid.keys())):
             raise ValueError('Model grid dimensions and requested interpolation target dimensions do not match')
 
-        # Which models are required to interpolate to x?
+        # Make sure we are not exceeding the bounds of virtual dimensions
+        for key in virtual_x:
+            if (virtual_x[key] < settings['virtual_dof'][key][0]) or (virtual_x[key] > settings['virtual_dof'][key][1]):
+                raise ValueError('Virtual dimension {} bounds exceeded'.format(key))
+
+        # Which models are required to interpolate to real_x?
         subgrid = {}
         for key in self._grid.keys():
-            if (x[key] > np.max(self._grid[key])) or (x[key] < np.min(self._grid[key])):
+            if (real_x[key] > np.max(self._grid[key])) or (real_x[key] < np.min(self._grid[key])):
                 raise ValueError('Model grid dimensions exceeded along {} axis'.format(key))
-            if x[key] in self._grid[key]:
-                subgrid[key] = np.array([x[key]])
+            if real_x[key] in self._grid[key]:
+                subgrid[key] = np.array([real_x[key]])
             else:
-                subgrid[key] = np.array([np.max(self._grid[key][self._grid[key] < x[key]]), np.min(self._grid[key][self._grid[key] > x[key]])])
+                subgrid[key] = np.array([np.max(self._grid[key][self._grid[key] < real_x[key]]), np.min(self._grid[key][self._grid[key] > real_x[key]])])
         required_models = set(['|'.join(np.array(model).astype(str)) for model in itertools.product(*[subgrid[key] for key in sorted(list(subgrid.keys()))])])
         self.statistics['num_models_used'] += len(required_models)
-
-        # If the current interpolator is already based on these models, just return it
-        if required_models == self._interpolator_models:
-            return self._interpolator
 
         # Determine which of the required models have not been loaded yet
         new_models = [model for model in required_models if model not in self._loaded]
@@ -729,16 +779,39 @@ class ModelGridInterpolator:
                     to_delete -= 1
             self._loaded_ordered = remaining
 
+        # Helper function to run the model preprocessor and resample the model (if necessary)
+        def preprocess(model, x, virtual_x, do_preprocess):
+            if not do_preprocess:
+                return model
+            params = {key: x[i] for i, key in enumerate(sorted(list(subgrid.keys())))}
+            params.update(virtual_x)
+            wl = self._model_wl
+            flux = preprocess_grid_model(wl, model[0], params, model[1])
+            if self._resample:
+                wl, flux = simulate_observation(wl, flux, self._detector_wl)
+            try:
+                self._wl
+            except:
+                setattr(self, '_wl', wl)
+            return flux
+
+        # Decide if we want to run preprocessing / resampling after the model is read or after it is accessed
+        # The former choice makes sense if no virtual dimensions are being fit. Since virtual parameters can
+        # change their values between accesses, we need to run preprocessing / resampling after each access
+        resample_after_read = len(list(set(settings['fit_dof']) & set(settings['virtual_dof']))) == 0
+
         # Load the new models
         for model in new_models:
             params = np.array(model.split('|')).astype(float)
-            keys = sorted(list(x.keys()))
+            keys = sorted(list(real_x.keys()))
             params = {keys[i]: params[i] for i in range(len(keys))}
-            wl, flux = read_grid_model(params, self._grid)
+            params_ordered = [params[key] for key in sorted(list(subgrid.keys()))]
+            wl, flux, meta = read_grid_model(params, self._grid)
 
             # Carry out synthetic photometry
             colors = np.zeros(len(self._synphot_bands))
             if len(self._synphot_bands) != 0:
+                raise NotImplemented() # We need to compute synthetic photometry in the preprocessor
                 if 'teff' not in params:
                     raise ValueError('The model grid must have "teff" as one of the axes to compute synthetic photometry')
                 phot = synphot(wl, flux, params['teff'], np.unique(self._synphot_bands), mag_system = self._mag_system, reddening = self._reddening)
@@ -748,20 +821,19 @@ class ModelGridInterpolator:
                     # Note that the order of bands is reversed in the color calculation, since synphot() returns bolometric corrections, not magnitudes
                     colors[i] = phot[color[1]] - phot[color[0]]
 
-            if self._resample:
-                wl, flux = simulate_observation(wl, flux, self._detector_wl)
             try:
-                self._wl
+                self._model_wl
             except:
-                setattr(self, '_wl', wl)
-            self._loaded[model] = np.concatenate([colors, flux]) # Prepend photometry to fluxes, so they are interpolated at the same time
+                setattr(self, '_model_wl', wl)
+            self._loaded[model] = (np.concatenate([colors, flux]), meta) # Prepend photometry to fluxes, so they are interpolated at the same time
+            self._loaded[model] = preprocess(self._loaded[model], params_ordered, virtual_x, resample_after_read)
             self._loaded_ordered += [model]
         self.statistics['num_models_loaded'] += len(new_models)
 
         # Build the interpolator
         subgrid_ordered = [subgrid[key] for key in sorted(list(subgrid.keys()))]
         meshgrid = np.meshgrid(*subgrid_ordered, indexing = 'ij')
-        spectra = np.vectorize(lambda *x: self._loaded['|'.join(np.array(x).astype(str))], signature = ','.join(['()'] * len(self._grid)) + '->(n)')(*meshgrid)
+        spectra = np.vectorize(lambda *x: preprocess(self._loaded['|'.join(np.array(x).astype(str))], x, virtual_x, not resample_after_read), signature = ','.join(['()'] * len(self._grid)) + '->(n)')(*meshgrid)
         setattr(self, '_interpolator', scp.interpolate.RegularGridInterpolator(subgrid_ordered, spectra))
         self._interpolator_models = required_models
         self.statistics['num_interpolators_built'] += 1
@@ -787,9 +859,17 @@ class ModelGridInterpolator:
             If requested (i.e. if `synphot_bands` is not empty), synthetic colors for the bands
             listed in `synphot_bands` with the desired reddening in the desired magnitude system
         """
+        # Separate out real and virtual grid dimensions
+        virtual_params = {}; real_params = {}
+        for key in params:
+            if key in settings['virtual_dof']:
+                virtual_params[key] = params[key]
+            else:
+                real_params[key] = params[key]
+
         self.statistics['num_interpolations'] += 1
         interpolator = self._build_interpolator(params)
-        result = interpolator([params[key] for key in sorted(list(params.keys()))])[0]
+        result = interpolator([real_params[key] for key in sorted(list(real_params.keys()))])[0]
         if len(self._synphot_bands) != 0:
             return self._wl, result[len(self._synphot_bands):], result[:len(self._synphot_bands)]
         else:
@@ -971,9 +1051,16 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
 
         return model_flux
 
-    # Define p0 and bounds. The bounds are set to the model grid range stored in the interpolator object
+    # Define p0 and bounds
     p0 = [initial[param] for param in dof]
-    bounds = np.array([[np.min(interpolator._grid[axis]), np.max(interpolator._grid[axis])] for axis in dof]).T
+    def get_bounds(axis):
+        if axis in interpolator._grid:
+            return [np.min(interpolator._grid[axis]), np.max(interpolator._grid[axis])]
+        elif axis in settings['virtual_dof']:
+            return settings['virtual_dof'][axis]
+        else:
+            raise ValueError('Unknown axis {}'.format(axis))
+    bounds = np.array([get_bounds(axis) for axis in dof]).T
 
     # Construct  and apply the fitting mask by superimposing the masks of individual parameters and removing bad pixels
     mask = np.full(len(wl), False)

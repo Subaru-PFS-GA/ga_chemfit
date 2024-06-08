@@ -16,7 +16,10 @@ settings = {
     'griddir': None,    # Model directory must be specified in local settings
 
     ### Which parameters to fit? ###
-    'fit_dof': ['zscale', 'alpha', 'teff', 'logg'],
+    'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'redshift'],
+
+    ### Virtual grid dimensions ###
+    'virtual_dof': {'redshift': [-200, 200]},
 }
 
 def read_grid_model(params, grid):
@@ -38,6 +41,12 @@ def read_grid_model(params, grid):
         - If no grid line has neighbors on both sides of the requested point, carry out
           nearest neighbor extrapolation along the axis with the closest neighbor
         - If extrapolation is impossible either, raise `ValueError()`
+
+    In order to handle redshift, the function will trim the wavelength range of the model spectrum
+    on both sides to make sure that the resulting wavelength range remains within the model coverage
+    at all redshifts between the bounds in `settings['virtual_dof']['redshift']`. The trimmed parts
+    of the spectrum are provided as additional model data in `meta` and may be used by the
+    preprocessor to apply the redshift correction
     
     Parameters
     ----------
@@ -53,6 +62,10 @@ def read_grid_model(params, grid):
         Grid of model wavelengths in A
     flux : array_like
         Corresponding flux densities
+    meta : dict
+        Dictionary with two keys. 'left' stores the part of the spectrum trimmed on the blue end, and
+        'right' stores the part of the spectrum trimmed on the red end. Each value is a list with two
+        elements: wavelengths and fluxes
     """
     def read_Grid7_model(params):
         wl = np.array([], dtype = float)
@@ -109,7 +122,7 @@ def read_grid_model(params, grid):
         return wl, flux * bb
 
     try:
-        return read_Grid7_model(params)
+        wl, flux = read_Grid7_model(params)
     except FileNotFoundError:
         grid = read_grid_dimensions()
 
@@ -139,15 +152,52 @@ def read_grid_model(params, grid):
             shortest = min(intervals, key = lambda k: intervals[k] if not np.isnan(intervals[k]) else np.inf)
             x = [np.sort(grid[shortest])[neighbor_positions[shortest][0]], np.sort(grid[shortest])[neighbor_positions[shortest][1]]]
             warn('Cannot load model {}. Will interpolate from {}={},{}'.format(params, shortest, *x))
-            return tuple(scp.interpolate.interp1d(x, [neighbors[shortest][0][i], neighbors[shortest][1][i]], axis = 0)(params[shortest]) for i in range(len(neighbors[shortest][0])))
-        # Otherwise, extrapolate from the nearest neighbor
-        intervals = {axis: np.nanmin(neighbor_distances[axis]) for axis in params if (not np.all(np.isnan(neighbor_distances[axis])))}
-        if len(intervals) == 0: # None of the axes have viable models to interpolate or extrapolate
-            raise ValueError('Unable to safely load {}: no models on the same gridlines found'.format(params))
-        shortest = min(intervals, key = intervals.get)
-        direction = np.where(~np.isnan(neighbor_distances[shortest]))[0][0]
-        warn('Cannot load model {}. Will load {}={} instead'.format(params, shortest, grid[shortest][neighbor_positions[shortest][direction]]))
-        return neighbors[shortest][direction]
+            wl, flux = tuple(scp.interpolate.interp1d(x, [neighbors[shortest][0][i], neighbors[shortest][1][i]], axis = 0)(params[shortest]) for i in range(len(neighbors[shortest][0])))
+        else:
+            # Otherwise, extrapolate from the nearest neighbor
+            intervals = {axis: np.nanmin(neighbor_distances[axis]) for axis in params if (not np.all(np.isnan(neighbor_distances[axis])))}
+            if len(intervals) == 0: # None of the axes have viable models to interpolate or extrapolate
+                raise ValueError('Unable to safely load {}: no models on the same gridlines found'.format(params))
+            shortest = min(intervals, key = intervals.get)
+            direction = np.where(~np.isnan(neighbor_distances[shortest]))[0][0]
+            warn('Cannot load model {}. Will load {}={} instead'.format(params, shortest, grid[shortest][neighbor_positions[shortest][direction]]))
+            wl, flux = neighbors[shortest][direction]
+
+    # Trim the spectrum on both sides to make sure we can do redshift corrections
+    wl_range = [np.min(wl * (1 + settings['virtual_dof']['redshift'][1] * 1e3 / scp.constants.c)), np.max(wl * (1 + settings['virtual_dof']['redshift'][0] * 1e3 / scp.constants.c))]
+    mask_left = wl < wl_range[0]; mask_right = wl > wl_range[1]; mask_in = (~mask_left) & (~mask_right)
+    meta = {'left': [wl[mask_left], flux[mask_left]], 'right': [wl[mask_right], flux[mask_right]]}
+    return wl[mask_in], flux[mask_in], meta
+
+def preprocess_grid_model(wl, flux, params, meta):
+    """Apply redshift correction to a loaded Grid7/GridIE model
+    
+    Parameters
+    ----------
+    wl : array_like
+        Grid of model wavelengths in A (trimmed to accommodate all redshifts)
+    flux : array_like
+        Corresponding flux densities
+    params : dict
+        Parameters of the model, including desired redshift
+    meta : dict
+        Trimmed parts of the spectrum, as detailed in `read_grid_model()`
+    
+    Returns
+    -------
+    array_like
+        Redshifted flux
+    """
+    # Restore the full (untrimmed) spectrum
+    wl_full = np.concatenate([meta['left'][0], wl, meta['right'][0]])
+    flux_full = np.concatenate([meta['left'][1], flux, meta['right'][1]])
+
+    # Apply the redshift
+    wl_redshifted = wl_full * (1 + params['redshift'] * 1e3 / scp.constants.c)
+
+    # Re-interpolate back into the original wavelength grid
+    flux = np.interp(wl, wl_redshifted, flux_full)
+    return flux
 
 def read_grid_dimensions(flush_cache = False):
     """Determine the available dimensions in the model grid and the grid points
