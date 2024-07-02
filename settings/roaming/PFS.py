@@ -16,12 +16,10 @@ settings = {
         'blue': {
             'FWHM': 2.07,
             'wl': np.linspace(3800, 6500, 4096),
-            'priority': 1,
         },
         'red_lr': {
             'FWHM': 2.63,
             'wl': np.linspace(6300, 9700, 4096),
-            'priority': 2,
         },
         'red_mr': {
             'FWHM': 1.368,

@@ -51,6 +51,7 @@ settings = {
     },
     'cont_pix': 165,
     'spline_order': 3,
+    'uninterrupted_cont': False,
 
     ### Warnings ###
     'throw_python_warnings': True,

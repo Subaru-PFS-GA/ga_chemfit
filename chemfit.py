@@ -449,15 +449,12 @@ def convolution_weights(bins, x, sigma, clip = 5.0, mode = 'window', max_size = 
     _convolution_weights_cache[hash_string] = C
     return C
 
-def combine_arms(wl = None, flux = None):
+def combine_arms(wl = None, flux = None, return_arm_index = False):
     """Combine wavelengths and fluxes recorded by individual spectrograph arms into
     a single spectrum
-    
-    `wl` and `flux` are dictionaries, keyed by spectrograph arm identifiers (must be
-    listed in `settings['arms']`). The function combines the spectra in each arm into a
-    single spectrum. If the wavelength ranges overlap between two arms, the overlap
-    region is removed from the lower priority arm (the priorities are set in
-    `settings['arms']` as well)
+
+    The function returns the combined spectrum with wavelengths sorted in ascending
+    order
     
     Parameters
     ----------
@@ -472,15 +469,22 @@ def combine_arms(wl = None, flux = None):
         Dictionary of fluxes corresponding to the wavelength bins in `wl`. Must have
         the same keys and array lengths as `wl`. Alternatively, set to `None` if only
         wavelengths are required in the output
+    return_arm_index : bool, optional
+        If `True`, return the `arm_index` array that allows each value in the output to
+        be traced to its arm of origin
     
     Returns
     -------
     wl : array_like
-        Combined and sorted array of reference wavelengths for all arms with overlapping
-        wavelength bins removed according to arm priorities
+        Combined and sorted array of reference wavelengths for all arms
     flux : array_like
         Corresponding array of fluxes. Only returned if the optional argument `flux` is
         not `None`
+    arm_index : array_like
+        Corresponding array of spectrograph arm indices. Only returned if the optional
+        argument `return_arm_index` is set to `True`. Each value in the array is an
+        integer that determines the serial number of the arm of origin. Serial numbers
+        are assigned starting with 0 in the alphabetical order of arm names
     """
     # Populate wl if not given
     if wl is None:
@@ -498,73 +502,28 @@ def combine_arms(wl = None, flux = None):
         if not np.all([len(wl[key]) == len(flux[key]) for key in wl]):
             raise ValueError('The dimensions of `wl` and `flux` do not match')
 
-    # Resolve overlaps
-    for arm_1, arm_2 in itertools.combinations(wl.keys(), 2):
-        # We need at least two reference wavelengths to define wavelength bins
-        if (len(wl[arm_1]) < 2) or (len(wl[arm_2]) < 2):
-            continue
-        # The overlap is evaluated for wavelength bin edges, not reference wavelengths themselves
-        bin_edges_1 = get_bin_edges(wl[arm_1])
-        bin_edges_2 = get_bin_edges(wl[arm_2])
-        # Default priorities to zero if not set
-        if 'priority' not in settings['arms'][arm_1]:
-            priority_1 = 0
-        else:
-            priority_1 = settings['arms'][arm_1]['priority']
-        if 'priority' not in settings['arms'][arm_2]:
-            priority_2 = 0
-        else:
-            priority_2 = settings['arms'][arm_2]['priority']
-        # If no overlap, do nothing
-        if (np.min(bin_edges_1) > np.max(bin_edges_2)) or (np.min(bin_edges_2) > np.max(bin_edges_1)):
-            continue
-        # Compute the overlap region and check that priorities are different (else we don't know which arm to keep)
-        overlap = [max(np.min(bin_edges_1), np.min(bin_edges_2)), min(np.max(bin_edges_1), np.max(bin_edges_2))]
-        if priority_1 == priority_2:
-            raise ValueError('Spectrograph arms {} and {} overlap in the region ({}:{}), but have equal priorities ({})'.format(arm_1, arm_2, *overlap, priority_2))
-        if priority_1 > priority_2:
-            high = bin_edges_1; low = bin_edges_2
-            arm_high = arm_1; arm_low = arm_2
-        else:
-            high = bin_edges_2; low = bin_edges_1
-            arm_high = arm_2; arm_low = arm_1
-        # A higher priority arm cannot be internal to a lower priority arm, as that would slice the lower priority arm in two
-        if (np.min(high) > np.min(low)) and (np.max(high) < np.max(low)):
-            raise ValueError('Spectrograph arm {} (priority {}) is internal to {} (priority {}). This results in wavelength range discontinuity'.format(arm_high, max(priority_1, priority_2), arm_low, min(priority_1, priority_2)))
-        # Mask out the overlap region in the lower priority arm
-        mask = (low <= np.min(high)) | (low >= np.max(high))
-        # Since "<=" and ">=" are used above, we may get "orphaned" bin edges, which need to be removed as well
-        if (np.max(high) == np.max(low)):
-            mask[low == np.max(high)] = False
-        if (np.min(high) == np.min(low)):
-            mask[low == np.min(high)] = False
-        # Convert the bin edge mask into reference wavelength mask (both left and right edges must be defined for the bin to survive)
-        mask = mask[:-1] & mask[1:]
-        wl[arm_low] = wl[arm_low][mask]
-        if flux is not None:
-            flux[arm_low] = flux[arm_low][mask]
-
-    # Remove empty arms
-    for arm in list(wl.keys()):
-        if len(wl[arm]) < 2:
-            del wl[arm]
-            if flux is not None:
-                del flux[arm]
-
     # Combine the arms into a single spectrum
-    keys = list(wl.keys())
+    keys = sorted(list(wl.keys()))
+    arm_index = np.concatenate([np.full(len(wl[key]), i) for i, key in enumerate(keys)])
     wl = np.concatenate([wl[key] for key in keys])
     if flux is not None:
         flux = np.concatenate([flux[key] for key in keys])
     sort = np.argsort(wl)
     wl = wl[sort]
+    arm_index = arm_index[sort]
     if flux is not None:
         flux = flux[sort]
 
-    if flux is not None:
-        return wl, flux
+    if return_arm_index:
+        if flux is not None:
+            return wl, flux, arm_index
+        else:
+            return wl, arm_index
     else:
-        return wl
+        if flux is not None:
+            return wl, flux
+        else:
+            return wl
 
 def simulate_observation(wl, flux, detector_wl = None, mask_unmodelled = True, clip = 5, combine = True):
     """Simulate observation of the model spectrum by a spectrograph
@@ -909,7 +868,7 @@ def ranges_to_mask(arr, ranges, in_range_value = True, strict = False):
             mask[(arr >= window[0]) & (arr <= window[1])] = in_range_value
     return mask
 
-def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
+def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None, arm_index = None):
     """Estimate continuum correction in the spectrum using a spline fit
     
     The function carries out a weighted spline fit to a spectrum given by wavelengths in `wl`,
@@ -940,29 +899,47 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None):
         Dictionary of boolean masks, keyed by stellar parameters. If given, this argument will be
         modified to exclude the regions of the spectrum potentially affected by spline extrapolation
         from the main fitter
+    arm_index : array_like
+        Indices of spectrograph arms corresponding to the provided wavelengths and fluxes. See
+        `combine_arms()`
     
     Returns
     -------
     array_like
         Estimated continuum correction multiplier at each wavelength in `wl`
     """
+    # Separate the spectrum into individual spectrograph arms if `uninterrupted_cont` is `False`, or merge
+    # all arms together otherwise
+    if arm_index is None or settings['uninterrupted_cont']:
+        spline_index = np.zeros(len(wl))
+    else:
+        spline_index = arm_index
+
+    # Build a mask of values to be included in the continuum estimation. If parameter masks are provided,
+    # update them to avoid edge effects when necessary
     mask = (ivar > 0) & (~np.isnan(ivar)) & (~np.isnan(flux))
     for bad_continuum_range in settings['masks']['continuum']:
-        bad_continuum_range_mask = ranges_to_mask(wl, [bad_continuum_range], False)
-        # Check for potential edge effects and remove the affected region from the fit
-        if masks is not None:
-            if (not bad_continuum_range_mask[mask][-1]) or (not bad_continuum_range_mask[mask][0]):
-                warn('Region {} excluded from continuum estimation overflows the spectral range. To avoid edge effects, this region will be ignored by the fitter'.format(bad_continuum_range))
-                for arm in masks:
-                    masks[arm] &= ranges_to_mask(wl, [bad_continuum_range], False)
-        mask &= bad_continuum_range_mask
+        for index in np.unique(spline_index):
+            include = spline_index == index
+            bad_continuum_range_mask = ranges_to_mask(wl[include], [bad_continuum_range], False)
+            # Check for potential edge effects and remove the affected region from the fit
+            if masks is not None:
+                if (not bad_continuum_range_mask[mask[include]][-1]) or (not bad_continuum_range_mask[mask[include]][0]):
+                    warn('Region {} excluded from continuum estimation overflows the spectral range. To avoid edge effects, this region will be ignored by the fitter'.format(bad_continuum_range))
+                    for param in masks:
+                        masks[param][include] &= ranges_to_mask(wl[include], [bad_continuum_range], False)
+            mask[include] &= bad_continuum_range_mask
 
     # Fit the spline
-    t = wl[mask][np.round(np.linspace(0, len(wl[mask]), int(len(wl[mask]) / npix))).astype(int)[1:-1]]
-    spline = scp.interpolate.splrep(wl[mask], flux[mask], w = ivar[mask], t = t, k = k)
-    return scp.interpolate.splev(wl, spline)
+    result = np.full(len(wl), np.nan)
+    for index in np.unique(spline_index):
+        include = mask & (spline_index == index)
+        t = wl[include][np.round(np.linspace(0, len(wl[include]), int(len(wl[include]) / npix))).astype(int)[1:-1]]
+        spline = scp.interpolate.splrep(wl[include], flux[include], w = ivar[include], t = t, k = k)
+        result[spline_index == index] = scp.interpolate.splev(wl[spline_index == index], spline)
+    return result
 
-def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, phot, method):
+def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, arm_index, phot, method):
     """Fit the model to the spectrum
     
     Helper function to `chemfit()`. It sets up a model callback for `scp.optimize.curve_fit()` with
@@ -996,6 +973,9 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
         logically added (or)
     interpolator : ModelGridInterpolator
         Model grid interpolator object that will be used to construct models during optimization
+    arm_index : array_like
+        Indices of spectrograph arms corresponding to the provided wavelengths and fluxes. See
+        `combine_arms()`
     phot : dict
         Photometric colors of the star. Each color is keyed by `BAND1#BAND2`, where `BAND1` and `BAND2` are
         the transmission profile filenames of the filters, as required by `synphot()`. Each element is a
@@ -1023,7 +1003,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
 
     # This function will be passed to curve_fit() as the model callback. The <signature> comment is a placeholder
     # to be replaced with the interpretation of the function signature later
-    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator, phot = phot, diagnostic = _fitter_diagnostic_storage):
+    def f(x, params, mask, data_wl = wl, data_flux = flux, data_ivar = ivar, priors = priors, interpolator = interpolator, arm_index = arm_index, phot = phot, diagnostic = _fitter_diagnostic_storage):
         # <signature>
 
         # Load the requested model
@@ -1031,7 +1011,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
             model_wl, model_flux, model_phot = interpolator(params)
         else:
             model_wl, model_flux = interpolator(params)
-        cont = estimate_continuum(data_wl, data_flux / model_flux, data_ivar * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'])
+        cont = estimate_continuum(data_wl, data_flux / model_flux, data_ivar * model_flux ** 2, npix = settings['cont_pix'], k = settings['spline_order'], arm_index = arm_index)
         diagnostic['model_wl'] = model_wl; diagnostic['model_flux'] = model_flux; diagnostic['model_cont'] = cont
         model_wl = model_wl[mask]; model_flux = (cont * model_flux)[mask]
 
@@ -1077,7 +1057,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
     f[0] = f[0].replace('params', ', '.join(dof))
     f[0] = f[0].replace('mask', 'mask = mask')
     f[1] = f[1].replace('# <signature>', 'params = {' + ', '.join(['\'{}\': {}'.format(param, [param, initial[param]][param not in dof]) for param in initial]) + '}')
-    scope = {'priors': priors, 'phot': phot, 'interpolator': interpolator, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings, 'synphot': synphot, '_fitter_diagnostic_storage': _fitter_diagnostic_storage}
+    scope = {'priors': priors, 'phot': phot, 'interpolator': interpolator, 'arm_index': arm_index, 'mask': mask, 'np': np, 'wl': wl, 'flux': flux, 'ivar': ivar, 'estimate_continuum': estimate_continuum, 'settings': settings, 'synphot': synphot, '_fitter_diagnostic_storage': _fitter_diagnostic_storage}
     exec('\n'.join(f)[f[0].find('def'):], scope)
     f = scope['f']
 
@@ -1112,6 +1092,7 @@ def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator,
         fit[2]['fit'] = {'x': x, 'y': y, 'sigma': sigma, 'f': f(x, *fit[0]), 'p0': p0, 'bounds': bounds, 'dof': dof}
         fit[2]['model'] = {'wl': diagnostic['model_wl'], 'flux': diagnostic['model_flux'], 'cont': diagnostic['model_cont']}
         fit[2]['cost'] = (fit[2]['fit']['f'] - fit[2]['fit']['y']) ** 2.0 / fit[2]['fit']['sigma'] ** 2.0
+        fit[2]['arm_index'] = arm_index
 
     return fit[2]
 
@@ -1287,7 +1268,7 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
     warnings_stack_length = len(warnings_stack)
 
     # Combine arms
-    wl_combined, flux_combined = combine_arms(wl, flux)
+    wl_combined, flux_combined, arm_index = combine_arms(wl, flux, return_arm_index = True)
     ivar_combined = combine_arms(wl, ivar)[1]
 
     # Build the interpolator and resampler
@@ -1321,7 +1302,7 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
         if len(ranges_specific) != 0:
             masks[param] &= ranges_to_mask(wl_combined, ranges_specific)
     # Run the continuum fitter once to give it a chance to update the fitting masks if it needs to
-    cont = estimate_continuum(wl_combined, flux_combined, ivar_combined, npix = settings['cont_pix'], k = settings['spline_order'], masks = masks)
+    cont = estimate_continuum(wl_combined, flux_combined, ivar_combined, npix = settings['cont_pix'], k = settings['spline_order'], masks = masks, arm_index = arm_index)
 
     # Preliminary setup
     fit = {param: np.atleast_1d(initial[param])[0] for param in initial}       # Initial guesses for the fitter
@@ -1329,7 +1310,7 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
 
 
     # Run the main fitter
-    extra = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator, phot, method = method)
+    extra = fit_model(wl_combined, flux_combined, ivar_combined, fit, initial, np.atleast_1d(settings['fit_dof']), errors, masks, interpolator, arm_index, phot, method = method)
 
     # Get the texts of unique issued warnings
     warnings = np.unique(warnings_stack[warnings_stack_length:])
