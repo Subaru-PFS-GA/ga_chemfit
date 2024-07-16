@@ -297,7 +297,7 @@ def get_bin_edges(bins):
 
     return np.concatenate([[bins[0] - (bins[1] - bins[0]) / 2], (bins[1:] + bins[:-1]) / 2, [bins[-1] + (bins[-1] - bins[-2]) / 2]])
 
-def convolution_weights(bins, x, sigma, clip = 5.0, mode = 'window', max_size = 15e6, flush_cache = False):
+def convolution_weights(bins, x, sigma, clip = 5.0, mode = 'window', max_size = 25e6, flush_cache = False):
     """Calculate the complete convolution matrix for an arbitrary flux density spectrum
     and an arbitrary set of detector bins
     
@@ -935,8 +935,11 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None, arm_inde
     for index in np.unique(spline_index):
         include = mask & (spline_index == index)
         t = wl[include][np.round(np.linspace(0, len(wl[include]), int(len(wl[include]) / npix))).astype(int)[1:-1]]
-        spline = scp.interpolate.splrep(wl[include], flux[include], w = ivar[include], t = t, k = k)
-        result[spline_index == index] = scp.interpolate.splev(wl[spline_index == index], spline)
+        if len(wl[include]) > k:
+            spline = scp.interpolate.splrep(wl[include], flux[include], w = ivar[include], t = t, k = k)
+            result[spline_index == index] = scp.interpolate.splev(wl[spline_index == index], spline)
+        else:
+            result[spline_index == index] = 1.0
     return result
 
 def fit_model(wl, flux, ivar, initial, priors, dof, errors, masks, interpolator, arm_index, phot, method):
