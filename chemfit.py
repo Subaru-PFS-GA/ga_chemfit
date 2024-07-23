@@ -625,7 +625,7 @@ class ModelGridInterpolator:
     
     Attributes
     ----------
-    statistics : array_like
+    statistics : dict
         Statistical data to track the interpolator's performance. Includes the following
         keys:
             'num_models_used': Total number of models read from disk *if* no caching was
@@ -745,7 +745,7 @@ class ModelGridInterpolator:
             params = {key: x[i] for i, key in enumerate(sorted(list(subgrid.keys())))}
             params.update(virtual_x)
             wl = self._model_wl
-            flux = preprocess_grid_model(wl, model[0], params, model[1])
+            flux = preprocess_grid_model(wl, model[0] * 1.0, params, model[1])
             if self._resample:
                 wl, flux = simulate_observation(wl, flux, self._detector_wl)
             try:
