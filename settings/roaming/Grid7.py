@@ -13,7 +13,7 @@ import re
 
 settings = {
     ### Model grid settings ###
-    'griddir': None,    # Model directory must be specified in local settings
+    'griddir': original_settings['griddir'],    # Model directory must be specified in local settings
 
     ### Which parameters to fit? ###
     'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'redshift'],

@@ -167,7 +167,7 @@ def initialize(*presets):
 
     index = 0 # Load counter to ensure unique module names for all loaded files
     for preset in ['default'] + list(presets):
-        scripts = ['{}/settings/roaming/{}.py'.format(script_dir, preset), '{}/settings/local/{}.py'.format(script_dir, preset)]
+        scripts = ['{}/settings/local/{}.py'.format(script_dir, preset), '{}/settings/roaming/{}.py'.format(script_dir, preset)]
         scripts = [script for script in scripts if os.path.isfile(script)]
         if len(scripts) == 0:
             raise ValueError('Settings preset {} not found'.format(preset))
@@ -1239,7 +1239,8 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
         Spectrum weights (inverted variances) keyed by spectrograph arm
     initial : dict
         Initial guesses for the stellar parameters, keyed by parameter. Each parameter supported
-        by the model grid must be listed. The value of each element is either a float or a
+        by the model grid must be listed, except those for which default initial guesses are defined
+        in `settings['default_initial']`. The value of each element is either a float or a
         2-element tuple. In the former case, the value is treated as the initial guess to the
         fitter. Otherwise, the first element is treated as an initial guess and the second value
         is treated as the prior uncertainty in the parameter
@@ -1269,6 +1270,11 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
     """
     # Remember the length of pre-existing warnings stack
     warnings_stack_length = len(warnings_stack)
+
+    # Set default initial guesses
+    for param in settings['default_initial']:
+        if (param not in initial):
+            initial[param] = settings['default_initial'][param]
 
     # Combine arms
     wl_combined, flux_combined, arm_index = combine_arms(wl, flux, return_arm_index = True)
