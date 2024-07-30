@@ -1272,9 +1272,10 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
     warnings_stack_length = len(warnings_stack)
 
     # Set default initial guesses
-    for param in settings['default_initial']:
-        if (param not in initial):
-            initial[param] = settings['default_initial'][param]
+    if 'default_initial' in settings:
+        for param in settings['default_initial']:
+            if (param not in initial):
+                initial[param] = settings['default_initial'][param]
 
     # Combine arms
     wl_combined, flux_combined, arm_index = combine_arms(wl, flux, return_arm_index = True)
