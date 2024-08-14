@@ -130,8 +130,8 @@ def read_grid_model(params, grid):
     flux : array_like
         Corresponding flux densities
     meta : dict
-        Dictionary with trimmed parts of the spectrum for redshift calculations and element response
-        functions
+        Dictionary with trimmed parts of the spectrum for redshift calculations, continuum component
+        of the model flux and element response functions
     """
     global __model_parameters
 
@@ -149,10 +149,16 @@ def read_grid_model(params, grid):
     f.close()
     wl, flux = model['null']['wl'], model['null']['line']
 
+    # Prepare continuum flux
+    cont = np.zeros(len(model['null']['flux']))
+    sat = model['null']['line'] == 0
+    cont[~sat] = model['null']['flux'][~sat] / model['null']['line'][~sat]
+    cont[sat] = np.interp(wl[sat], wl[~sat], cont[~sat])
+
     # Trim the spectrum on both sides to make sure we can do redshift corrections
     wl_range = [np.min(wl * (1 + settings['virtual_dof']['redshift'][1] * 1e3 / scp.constants.c)), np.max(wl * (1 + settings['virtual_dof']['redshift'][0] * 1e3 / scp.constants.c))]
     mask_left = wl < wl_range[0]; mask_right = wl > wl_range[1]; mask_in = (~mask_left) & (~mask_right)
-    meta = {'left': [wl[mask_left], flux[mask_left]], 'right': [wl[mask_right], flux[mask_right]], 'response': model['response']}
+    meta = {'left': [wl[mask_left], flux[mask_left]], 'right': [wl[mask_right], flux[mask_right]], 'response': model['response'], 'cont': cont}
 
     return wl[mask_in], flux[mask_in], meta
 
@@ -173,7 +179,7 @@ def preprocess_grid_model(wl, flux, params, meta):
         Parameters of the model, including desired redshift, quickblur FWHM and
         element abundances
     meta : dict
-        Trimmed parts of the spectrum and element response functions
+        Trimmed parts of the spectrum, continuum spectrum and element response functions
     
     Returns
     -------
@@ -189,6 +195,9 @@ def preprocess_grid_model(wl, flux, params, meta):
         if param[:9] == 'response_':
             element = param[9:]
             flux_full[meta['response'][element]['mask']] += scp.interpolate.interp1d(meta['response'][element]['abun'], meta['response'][element]['spectra'])(params[param]) - meta['response'][element]['spectra'][:,0]
+
+    # Add continuum
+    flux_full *= meta['cont']
 
     # Apply the redshift
     wl_redshifted = wl_full * (1 + params['redshift'] * 1e3 / scp.constants.c)

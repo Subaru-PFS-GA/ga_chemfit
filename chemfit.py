@@ -746,12 +746,29 @@ class ModelGridInterpolator:
             params.update(virtual_x)
             wl = self._model_wl
             flux = preprocess_grid_model(wl, model[0] * 1.0, params, model[1])
+
+            # Synthetic photometry
+            colors = np.zeros(len(self._synphot_bands))
+            if len(self._synphot_bands) != 0:
+                if 'teff' not in params:
+                    raise ValueError('The model grid must have "teff" as one of the axes to compute synthetic photometry')
+                phot = synphot(wl, flux, params['teff'], np.unique(self._synphot_bands), mag_system = self._mag_system, reddening = self._reddening)
+                for i, color in enumerate(self._synphot_bands):
+                    if np.isnan(phot[color[0]]) or np.isnan(phot[color[1]]):
+                        raise ValueError('Could not calculate synthetic color {} for model {}'.format(color, params))
+                    # Note that the order of bands is reversed in the color calculation, since synphot() returns bolometric corrections, not magnitudes
+                    colors[i] = phot[color[1]] - phot[color[0]]
+
             if self._resample:
                 wl, flux = simulate_observation(wl, flux, self._detector_wl)
             try:
                 self._wl
             except:
                 setattr(self, '_wl', wl)
+
+            if len(colors) > 0:
+                flux = np.concatenate([colors, flux])
+
             return flux
 
         # Decide if we want to run preprocessing / resampling after the model is read or after it is accessed
@@ -767,24 +784,11 @@ class ModelGridInterpolator:
             params_ordered = [params[key] for key in sorted(list(subgrid.keys()))]
             wl, flux, meta = read_grid_model(params, self._grid)
 
-            # Carry out synthetic photometry
-            colors = np.zeros(len(self._synphot_bands))
-            if len(self._synphot_bands) != 0:
-                raise NotImplemented() # We need to compute synthetic photometry in the preprocessor
-                if 'teff' not in params:
-                    raise ValueError('The model grid must have "teff" as one of the axes to compute synthetic photometry')
-                phot = synphot(wl, flux, params['teff'], np.unique(self._synphot_bands), mag_system = self._mag_system, reddening = self._reddening)
-                for i, color in enumerate(self._synphot_bands):
-                    if np.isnan(phot[color[0]]) or np.isnan(phot[color[1]]):
-                        raise ValueError('Could not calculate synthetic color {} for model {}'.format(color, params))
-                    # Note that the order of bands is reversed in the color calculation, since synphot() returns bolometric corrections, not magnitudes
-                    colors[i] = phot[color[1]] - phot[color[0]]
-
             try:
                 self._model_wl
             except:
                 setattr(self, '_model_wl', wl)
-            self._loaded[model] = (np.concatenate([colors, flux]), meta) # Prepend photometry to fluxes, so they are interpolated at the same time
+            self._loaded[model] = (flux, meta)
             self._loaded[model] = preprocess(self._loaded[model], params_ordered, virtual_x, resample_after_read)
             self._loaded_ordered += [model]
         self.statistics['num_models_loaded'] += len(new_models)
