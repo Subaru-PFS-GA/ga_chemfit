@@ -55,7 +55,7 @@ def read_grid_dimensions(flush_cache = False):
         f.close()
         return grid
 
-    grid = {'teff': [], 'logg': [], 'zscale': [], 'alpha': []}
+    grid = {'teff': [], 'logg': [], 'zscale': [], 'alpha': [], 'carbon': [], 'sodium': [], 'vanadium': []}
     __model_parameters = {}
 
     # Extract the parameters of all available models
@@ -67,8 +67,11 @@ def read_grid_dimensions(flush_cache = False):
         except:
             index = [i for i in range(1, len(h)) if h[i].header['TABLE'] == 'Chemical composition'][0]
         grid['teff'] += [h[0].header['TEFF']]; grid['logg'] += [h[0].header['LOGG']]; grid['zscale'] += [np.round(h[0].header['ZSCALE'], 2)]
-        grid['alpha'] += [np.round(h[index].data['Relative abundance'][np.where(h[index].data['Element'] == 'Ti')[0][0]], 2)]
-        model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}'.format(grid['teff'][-1], grid['logg'][-1], grid['zscale'][-1], grid['alpha'][-1])
+        grid['alpha'] += [np.round(h[index].data['Relative abundance'][np.where(h[index].data['Element'] == 'O')[0][0]], 2)]
+        grid['carbon'] += [np.round(h[index].data['Relative abundance'][np.where(h[index].data['Element'] == 'C')[0][0]], 2)]
+        grid['sodium'] += [np.round(h[index].data['Relative abundance'][np.where(h[index].data['Element'] == 'Na')[0][0]], 2)]
+        grid['vanadium'] += [np.round(h[index].data['Relative abundance'][np.where(h[index].data['Element'] == 'V')[0][0]], 2)]
+        model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}c{:.3f}na{:.3f}v{:.3f}'.format(grid['teff'][-1], grid['logg'][-1], grid['zscale'][-1], grid['alpha'][-1], grid['carbon'][-1], grid['sodium'][-1], grid['vanadium'][-1]).replace('-0.000', '0.000')
         __model_parameters[model_id] = model
         h.close()
 
@@ -115,14 +118,57 @@ def read_grid_model(params, grid):
     except:
         read_grid_dimensions()
 
-    model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}'.format(params['teff'], params['logg'], params['zscale'], params['alpha'])
-    if model_id not in __model_parameters:
-        raise FileNotFoundError('Cannot locate model {}'.format(params))
+    def read_FITS_model(params):
+        model_id = 't{teff:.3f}l{logg:.3f}z{zscale:.3f}a{alpha:.3f}c{carbon:.3f}na{sodium:.3f}v{vanadium:.3f}'.format(**params).replace('-0.000', '0.000')
+        if model_id not in __model_parameters:
+            raise FileNotFoundError('Cannot locate model {}'.format(params))
+        h = fits.open(__model_parameters[model_id])
+        wl = h[1].data['Wavelength']
+        flux = h[1].data['Flux density']
+        h.close()
+        return wl, flux
 
-    h = fits.open(__model_parameters[model_id])
-    wl = h[1].data['Wavelength']
-    flux = h[1].data['Total flux density'] / h[1].data['Continuum flux density']
-    h.close()
+    try:
+        wl, flux = read_FITS_model(params)
+    except FileNotFoundError:
+        grid = read_grid_dimensions()
+
+        # Find nearest neighbours along each axis in each of the two directions
+        neighbors = {}; neighbor_distances = {}; neighbor_positions = {}
+        for axis in params:
+            neighbors[axis] = [None, None]
+            neighbor_distances[axis] = [np.nan, np.nan]
+            neighbor_positions[axis] = [np.nan, np.nan]
+            for direction in [-1, 1]:
+                pos = (init_pos := np.where(np.sort(grid[axis]) == params[axis])[0][0]) + direction
+                while pos >= 0 and pos < len(grid[axis]):
+                    neighbor_params = copy.copy(params)
+                    neighbor_params[axis] = np.sort(grid[axis])[pos]
+                    try:
+                        neighbors[axis][int(direction > 0)] = read_FITS_model(neighbor_params)
+                        neighbor_positions[axis][int(direction > 0)] = pos
+                        neighbor_distances[axis][int(direction > 0)] = pos - init_pos
+                        break
+                    except FileNotFoundError:
+                        pos += direction
+                        continue
+
+        # If possible, interpolate over the shortest interval
+        intervals = {axis: neighbor_positions[axis][1] - neighbor_positions[axis][0] for axis in params}
+        if not np.all(np.isnan(list(intervals.values()))):
+            shortest = min(intervals, key = lambda k: intervals[k] if not np.isnan(intervals[k]) else np.inf)
+            x = [np.sort(grid[shortest])[neighbor_positions[shortest][0]], np.sort(grid[shortest])[neighbor_positions[shortest][1]]]
+            warn('Cannot load model {}. Will interpolate from {}={},{}'.format(params, shortest, *x))
+            wl, flux = tuple(scp.interpolate.interp1d(x, [neighbors[shortest][0][i], neighbors[shortest][1][i]], axis = 0)(params[shortest]) for i in range(len(neighbors[shortest][0])))
+        else:
+            # Otherwise, extrapolate from the nearest neighbor
+            intervals = {axis: np.nanmin(neighbor_distances[axis]) for axis in params if (not np.all(np.isnan(neighbor_distances[axis])))}
+            if len(intervals) == 0: # None of the axes have viable models to interpolate or extrapolate
+                raise ValueError('Unable to safely load {}: no models on the same gridlines found'.format(params))
+            shortest = min(intervals, key = intervals.get)
+            direction = np.where(~np.isnan(neighbor_distances[shortest]))[0][0]
+            warn('Cannot load model {}. Will load {}={} instead'.format(params, shortest, grid[shortest][neighbor_positions[shortest][direction]]))
+            wl, flux = neighbors[shortest][direction]
 
     # Trim the spectrum on both sides to make sure we can do redshift corrections
     wl_range = [np.min(wl * (1 + settings['virtual_dof']['redshift'][1] * 1e3 / scp.constants.c)), np.max(wl * (1 + settings['virtual_dof']['redshift'][0] * 1e3 / scp.constants.c))]
