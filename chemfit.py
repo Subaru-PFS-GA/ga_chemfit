@@ -939,7 +939,9 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None, arm_inde
     for index in np.unique(spline_index):
         include = mask & (spline_index == index)
         t = wl[include][np.round(np.linspace(0, len(wl[include]), int(len(wl[include]) / npix))).astype(int)[1:-1]]
-        if len(wl[include]) > k:
+        if k == 0:
+            result[spline_index == index] = np.full(np.count_nonzero(spline_index == index), np.sum(flux[include] * ivar[include]) / np.sum(ivar[include]))
+        elif len(wl[include]) > k:
             spline = scp.interpolate.splrep(wl[include], flux[include], w = ivar[include], t = t, k = k)
             result[spline_index == index] = scp.interpolate.splev(wl[spline_index == index], spline)
         else:
