@@ -10,6 +10,8 @@
 ############################################################
 
 settings = {
+    'griddir': None,
+
     ### Synthetic photometry ###
     'filter_dir': script_dir + '/bands/',          # Path to the transmission profile directory
     'default_mag_system': 'VEGAMAG',               # Default magnitude system

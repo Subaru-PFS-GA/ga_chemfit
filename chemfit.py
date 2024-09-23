@@ -783,6 +783,8 @@ class ModelGridInterpolator:
             params = {keys[i]: params[i] for i in range(len(keys))}
             params_ordered = [params[key] for key in sorted(list(subgrid.keys()))]
             wl, flux, meta = read_grid_model(params, self._grid)
+            if not np.all(np.diff(wl) > 0.0):
+                raise ValueError('Model wavelengths must be strictly ascending')
 
             try:
                 self._model_wl
