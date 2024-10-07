@@ -18,6 +18,9 @@ settings = {
     ### Model grid settings ###
     'griddir': original_settings['griddir'],    # Model directory must be specified in local settings
 
+    ### Reduce size of model cache since the models now have response functions ###
+    'max_model_cache': 32,
+
     ### Which parameters to fit? ###
     'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'carbon', 'redshift'],
 
@@ -155,6 +158,11 @@ def read_grid_model(params, grid):
     wl = wl; cont = cont; flux = flux
     assert len(wl) == len(flux)
 
+    # Convert response functions into SciPy interpolation objects
+    for element in model['response']:
+        assert model['response'][element]['abun'][0] == 0
+        model['response'][element]['spectra'] = scp.interpolate.interp1d(model['response'][element]['abun'], model['response'][element]['spectra'] - model['response'][element]['spectra'][:,0][:,np.newaxis])
+
     # Trim the spectrum on both sides to make sure we can do redshift corrections
     wl_range = [np.min(wl * (1 + settings['virtual_dof']['redshift'][1] * 1e3 / scp.constants.c)), np.max(wl * (1 + settings['virtual_dof']['redshift'][0] * 1e3 / scp.constants.c))]
     mask_left = wl < wl_range[0]; mask_right = wl > wl_range[1]; mask_in = (~mask_left) & (~mask_right)
@@ -189,7 +197,7 @@ def preprocess_grid_model(wl, flux, params, meta):
     for param in params:
         if param[:9] == 'response_':
             element = param[9:]
-            flux_full[meta['response'][element]['mask']] += scp.interpolate.interp1d(meta['response'][element]['abun'], meta['response'][element]['spectra'])(params[param]) - meta['response'][element]['spectra'][:,0]
+            flux_full[meta['response'][element]['mask']] += meta['response'][element]['spectra'](params[param])
 
     # Add continuum
     flux_full *= meta['cont']

@@ -34,6 +34,8 @@ settings = {
         'continuum': [[6864, 6935], [7591, 7694], [8938, 9100]],
     },
 
+    'max_model_cache': 1000, # Maximum number of models allowed in memory
+
     ### Optimization parameters ###
     'return_diagnostics': True, # Return best-fit model, continuum correction and fitting masks in the chemfit.chemfit() output
     'gradient_descent': {

@@ -1299,7 +1299,7 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
         mag_system = phot['mag_system']
     else:
         mag_system = settings['default_mag_system']
-    interpolator = ModelGridInterpolator(detector_wl = wl, synphot_bands = synphot_bands, reddening = reddening, mag_system = mag_system)
+    interpolator = ModelGridInterpolator(detector_wl = wl, synphot_bands = synphot_bands, reddening = reddening, mag_system = mag_system, max_models = settings['max_model_cache'])
 
     # Get the fitting masks for each parameter
     masks = {}
