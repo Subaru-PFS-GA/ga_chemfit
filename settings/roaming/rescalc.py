@@ -19,13 +19,13 @@ settings = {
     'griddir': original_settings['griddir'],    # Model directory must be specified in local settings
 
     ### Which parameters to fit? ###
-    'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'redshift', 'quickblur'],
+    'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'carbon', 'redshift'],
 
     ### Virtual grid dimensions ###
-    'virtual_dof': {'redshift': [-200, 200], 'quickblur': [0, 0.5]},
+    'virtual_dof': {'redshift': [-200, 200]},
 
     ### Default initial guesses ###
-    'default_initial': {'redshift': 0.0, 'quickblur': 0.0}
+    'default_initial': {'redshift': 0.0}
 }
 
 def read_grid_dimensions(flush_cache = False):
@@ -60,13 +60,12 @@ def read_grid_dimensions(flush_cache = False):
         f.close()
         return grid
 
-    grid = {'teff': [], 'logg': [], 'zscale': [], 'alpha': []}
+    grid = {'teff': [], 'logg': [], 'zscale': [], 'alpha': [], 'carbon': []}
     __model_parameters = {}
     __available_elements = {}
 
     # Extract the parameters of all available models
     models = glob.glob(settings['griddir'] + '/*.pkl') + glob.glob(settings['griddir'] + '/**/*.pkl', recursive = True)
-    models = [model for model in models if os.path.basename(model) != 'cache.pkl']
     for i, model in enumerate(models):
         f = open(model, 'rb')
         model = pickle.load(f)
@@ -78,7 +77,11 @@ def read_grid_dimensions(flush_cache = False):
             grid['alpha'] += [np.round(model['meta']['abun']['Mg'], 3)]
         else:
             grid['alpha'] += [0.0]
-        model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}'.format(grid['teff'][-1], grid['logg'][-1], grid['zscale'][-1], grid['alpha'][-1])
+        if 'C' in model['meta']['abun']:
+            grid['carbon'] += [np.round(model['meta']['abun']['C'], 3)]
+        else:
+            grid['carbon'] += [0.0]
+        model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}c{:.3f}'.format(grid['teff'][-1], grid['logg'][-1], grid['zscale'][-1], grid['alpha'][-1], grid['carbon'][-1])
         __model_parameters[model_id] = models[i]
 
         for element in model['response']:
@@ -140,20 +143,17 @@ def read_grid_model(params, grid):
     except:
         read_grid_dimensions()
 
-    model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}'.format(params['teff'], params['logg'], params['zscale'], params['alpha'])
+    model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}c{:.3f}'.format(params['teff'], params['logg'], params['zscale'], params['alpha'], params['carbon'])
     if model_id not in __model_parameters:
         raise FileNotFoundError('Cannot locate model {}'.format(params))
 
     f = open(__model_parameters[model_id], 'rb')
     model = pickle.load(f)
     f.close()
-    wl, flux = model['null']['wl'], model['null']['line']
-
-    # Prepare continuum flux
-    cont = np.zeros(len(model['null']['flux']))
-    sat = model['null']['line'] == 0
-    cont[~sat] = model['null']['flux'][~sat] / model['null']['line'][~sat]
-    cont[sat] = np.interp(wl[sat], wl[~sat], cont[~sat])
+    wl = np.exp(np.arange(np.ceil(np.log(model['meta']['wl_start']) / (lgr := np.log(1.0 + 1.0 / model['meta']['res']))), np.floor(np.log(model['meta']['wl_end']) / lgr) + 1) * lgr) * 10
+    cont, flux = model['null']['cont'], model['null']['line']
+    wl = wl; cont = cont; flux = flux
+    assert len(wl) == len(flux)
 
     # Trim the spectrum on both sides to make sure we can do redshift corrections
     wl_range = [np.min(wl * (1 + settings['virtual_dof']['redshift'][1] * 1e3 / scp.constants.c)), np.max(wl * (1 + settings['virtual_dof']['redshift'][0] * 1e3 / scp.constants.c))]
@@ -163,12 +163,8 @@ def read_grid_model(params, grid):
     return wl[mask_in], flux[mask_in], meta
 
 def preprocess_grid_model(wl, flux, params, meta):
-    """Apply redshift correction, quickblur and element responses to a loaded model
+    """Apply redshift correction and element responses to a loaded model
 
-    quickblur is a virtual degree of freedom that applies a quick Gaussian blur
-    to the model spectrum with a given kernel FWHM. This parameter is helpful
-    when the exact line spread function of the observed spectrum is not known
-    
     Parameters
     ----------
     wl : array_like
@@ -176,15 +172,14 @@ def preprocess_grid_model(wl, flux, params, meta):
     flux : array_like
         Corresponding flux densities
     params : dict
-        Parameters of the model, including desired redshift, quickblur FWHM and
-        element abundances
+        Parameters of the model, including desired redshift and element abundances
     meta : dict
         Trimmed parts of the spectrum, continuum spectrum and element response functions
     
     Returns
     -------
     array_like
-        Redshifted flux with quickblur and element responses applied
+        Redshifted flux with element responses applied
     """
     # Restore the full (untrimmed) spectrum
     wl_full = np.concatenate([meta['left'][0], wl, meta['right'][0]])
@@ -201,14 +196,6 @@ def preprocess_grid_model(wl, flux, params, meta):
 
     # Apply the redshift
     wl_redshifted = wl_full * (1 + params['redshift'] * 1e3 / scp.constants.c)
-
-    # Apply quickblur
-    if params['quickblur'] != 0:
-        sigma = params['quickblur'] / (2 * np.sqrt(2 * np.log(2)))
-        intervals = np.linspace(wl_redshifted[0], wl_redshifted[-1], 100)
-        for interval_left, interval_right in zip(intervals[:-1], intervals[1:]):
-            interval = (wl_redshifted >= interval_left) & (wl_redshifted <= interval_right)
-            flux_full[interval] = scp.ndimage.gaussian_filter1d(flux_full[interval], sigma / (interval_right - interval_left) * len(wl_redshifted[interval]))
 
     # Re-interpolate back into the original wavelength grid
     flux = np.interp(wl, wl_redshifted, flux_full)
