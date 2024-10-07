@@ -1334,8 +1334,10 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
     warnings = np.unique(warnings_stack[warnings_stack_length:])
     inv_warnings_messages = {warnings_messages[key]: key for key in warnings_messages}
     warnings = [inv_warnings_messages[warning_id] for warning_id in warnings]
+    interpolator_statistics = copy.deepcopy(interpolator.statistics)
+    del interpolator
 
-    return {'fit': fit, 'errors': errors, 'extra': extra, 'interpolator_statistics': interpolator.statistics, 'warnings': warnings}
+    return {'fit': fit, 'errors': errors, 'extra': extra, 'interpolator_statistics': interpolator_statistics, 'warnings': warnings}
 
 def synphot(wl, flux, teff, bands, mag_system = settings['default_mag_system'], reddening = settings['default_reddening']):
     # Placeholder function to compute synthetic photometry (bolometric corrections). For now, this relies on the BasicATLAS routine
