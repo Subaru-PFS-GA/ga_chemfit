@@ -930,8 +930,7 @@ def estimate_continuum(wl, flux, ivar, npix = 100, k = 3, masks = None, arm_inde
             bad_continuum_range_mask = ranges_to_mask(wl[include], [bad_continuum_range], False)
             # Check for potential edge effects and remove the affected region from the fit
             if masks is not None:
-                if (not bad_continuum_range_mask[mask[include]][-1]) or (not bad_continuum_range_mask[mask[include]][0]):
-                    warn('Region {} excluded from continuum estimation overflows the spectral range. To avoid edge effects, this region will be ignored by the fitter'.format(bad_continuum_range))
+                if (len(bad_continuum_range_mask[mask[include]]) > 0) and ((not bad_continuum_range_mask[mask[include]][-1]) or (not bad_continuum_range_mask[mask[include]][0])):
                     for param in masks:
                         masks[param][include] &= ranges_to_mask(wl[include], [bad_continuum_range], False)
             mask[include] &= bad_continuum_range_mask
@@ -1340,8 +1339,111 @@ def chemfit(wl, flux, ivar, initial, phot = {}, method = 'gradient_descent'):
     return {'fit': fit, 'errors': errors, 'extra': extra, 'interpolator_statistics': interpolator_statistics, 'warnings': warnings}
 
 def synphot(wl, flux, teff, bands, mag_system = settings['default_mag_system'], reddening = settings['default_reddening']):
-    # Placeholder function to compute synthetic photometry (bolometric corrections). For now, this relies on the BasicATLAS routine
-    import atlas
-    band_filenames = list(map(lambda fn: settings['filter_dir'] + '/' + fn, bands))
-    phot = atlas.synphot(None, mag_system, reddening, band_filenames, spectrum = {'wl': wl, 'flux': flux, 'teff': teff}, silent = True)
-    return {os.path.basename(key): phot[key] for key in phot}
+    """Calculate synthetic photometry for a given spectrum
+
+    The function supports reddening corrections. Reddening is parameterized by a single degree of freedom
+    that is the optical reddening, E(B-V). The function applies extinction to each pixel of the spectrum,
+    using the FM07 reddening law implemented in the `extinction` Python module. Rv=3.1 is assumed
+
+    The output of the function is bolometric corrections. Photometric colors can then be calculated as the
+    inverted differences of bolometric corrections. E.g. to compute B-V, the bolometric correction of B is
+    subtracted from the bolometric correction of V. Absolute magnitudes can be estimated if the bolometric
+    luminosity of the star is known, e.g. from an evolutionary model
+
+    Parameters
+    ----------
+    wl : array_like
+        Wavelength array of the spectrum in A
+    flux : array_like
+        Corresponding spectral intensity array in erg / s / cm^2 / A / sr
+    teff : number
+        Effective temperature of the star in K. Note that the effective temperature does not affect
+        photometric colors, i.e. it offsets all bolometric corrections by the same amount
+    bands : list
+        Filenames that store the transmission profiles of the photometric bands to calculate synthetic
+        photometry in. Only the basenames must be provided (i.e. no paths). The files must be stored in
+        `settings['filter_dir']`. Each file should be a whitespace-separated ASCII table with two columns:
+        wavelength in A, and transmission (between 0 and 1)
+    mag_system : str, optional
+        Magnitude system for synthetic photometry. This must be either `ABMAG` or one of the keys of the
+        `settings['mag_systems']` dictionary. If it is the latter, the value of the dictionary must be the
+        full file path to the reference spectrum of the photometric system (likely Vega). The spectrum must
+        be a comma-separated CSV with two columns: wavelength in A and flux density in erg / s / cm^2 / A.
+        The argument defaults to the value in `settings['default_mag_system']`
+    reddening : number, optional
+        Optical reddening to incorporate in the synthetic photometry, E(B-V) in mag. The argument defaults to
+        the value in `settings['default_reddening']`
+
+    Returns
+    -------
+    dict
+        Bolometric corrections (in mag) in each of the requested photometric bands
+    """
+    global _synphot_cache
+    try:
+        _synphot_cache
+    except:
+        _synphot_cache = {'bands': {}, 'refs': {}}
+
+    if not np.all(np.diff(wl) > 0.0):
+        raise ValueError('Wavelengths in spectrum received for synthetic photometry are out of order')
+
+    # Equation 5 from Gerasimov+2022. Note that 71.197425 is the IAU constant approximately equaling M_bol_Sun + 2.5 * np.log10(Lsun in Watts)
+    C = 71.197425 - 2.5 * np.log10(4 * np.pi * scp.constants.sigma * (10 * scp.constants.parsec) ** 2.0 * 1000 ** 4.0)
+    c = scp.constants.c * 1e+10
+
+    result = {}
+    for band in np.atleast_1d(bands):
+        # Load the transmission profile of the photometric band
+        if band not in _synphot_cache['bands']:
+            try:
+                _synphot_cache['bands'][band] = np.loadtxt(settings['filter_dir'] + '/' + band, unpack = True)
+            except:
+                raise ValueError('Unable to load transmission of photometric band {}'.format(band))
+            if not np.all(np.diff(_synphot_cache['bands'][band][0]) > 0.0):
+                raise ValueError('Wavelengths in transmission of photometric band {} are out of order'.format(band))
+        filter_wl, filter_t = _synphot_cache['bands'][band]
+
+        # Load the reference spectrum of the chosen magnitude system
+        if mag_system == 'ABMAG':
+            # Equation 7 from Gerasimov+2022
+            f_ref_wl = wl
+            f_ref_flux = (3631 * 1e-23 * c) / (wl ** 2)
+        elif mag_system in settings['mag_systems']:
+            if mag_system not in _synphot_cache['refs']:
+                try:
+                    _synphot_cache['refs'][mag_system] = np.loadtxt(settings['mag_systems'][mag_system], unpack = True, delimiter = ',')
+                except:
+                    raise ValueError('Unable to load reference spectrum for {}'.format(mag_system))
+                if not np.all(np.diff(_synphot_cache['refs'][mag_system][0]) > 0.0):
+                    raise ValueError('Wavelengths in reference spectrum {} are out of order'.format(mag_system))
+            f_ref_wl, f_ref_flux = _synphot_cache['refs'][mag_system]
+            if filter_wl.max() > f_ref_wl.max() or filter_wl.min() < f_ref_wl.min():
+                result[band] = np.nan
+                continue
+        else:
+            raise ValueError('Unknown magnitude system {}'.format(mag_system))
+        filter_t_ref = np.interp(f_ref_wl, filter_wl, filter_t, left = 0, right = 0)
+
+        if filter_wl.max() > wl.max() or filter_wl.min() < wl.min():
+            result[band] = np.nan
+            continue
+        filter_t = np.interp(wl, filter_wl, filter_t, left = 0, right = 0)
+
+        if reddening != 0.0:
+            try:
+                import extinction
+            except:
+                raise ValueError('Could not import the extinction module. For extinguished photometry, make sure the module is installed ( https://github.com/kbarbary/extinction ).')
+            Rv = 3.1 # Rv must be 3.1 for the FM07 law
+            A = extinction.fm07(wl, reddening * Rv)
+        else:
+            A = 0.0
+
+        # Equation 6 from Gerasimov+2022
+        f1 = wl * flux * filter_t * 10 ** (-A / 2.5) * np.pi
+        f2 = f_ref_wl * f_ref_flux * filter_t_ref
+        # Equation 4 from Gerasimov+2022
+        result[band] = 2.5 * np.log10(np.trapz(f1, wl) / np.trapz(f2, f_ref_wl)) - 10 * np.log10(teff / 1000) + C
+
+    return result

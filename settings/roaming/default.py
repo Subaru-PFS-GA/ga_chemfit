@@ -13,16 +13,16 @@ settings = {
     'griddir': None,
 
     ### Synthetic photometry ###
-    'filter_dir': script_dir + '/bands/',          # Path to the transmission profile directory
-    'default_mag_system': 'VEGAMAG',               # Default magnitude system
-    'default_reddening': 0.0,                      # Default E(B-V)
+    'filter_dir': script_dir + '/bands/',                                    # Path to the transmission profile directory
+    'mag_systems': {'VEGAMAG': script_dir + '/misc/vega_bohlin_2004.dat'},   # Reference spectra for magnitude systems (ABMAG is added automatically)
+    'default_mag_system': 'VEGAMAG',                                         # Default magnitude system
+    'default_reddening': 0.0,                                                # Default E(B-V)
 
     ### Spectrograph settings ###
     'arms': {                                      # Parameters of individual spectrograph arms
         'default_arm': {
             'FWHM': 2.07,                              # FWHM of the line spread function in the arm in A
             'wl': np.linspace(3800, 6500, 4096),       # Default bin wavelengths in the arm in A
-            'priority': 1,                             # Arm priority if overlapping with other arms in the wavelength space
         },
     },
 
