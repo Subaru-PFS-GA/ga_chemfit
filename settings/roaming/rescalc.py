@@ -154,6 +154,8 @@ def read_grid_model(params, grid):
     model = pickle.load(f)
     f.close()
     wl = np.exp(np.arange(np.ceil(np.log(model['meta']['wl_start']) / (lgr := np.log(1.0 + 1.0 / model['meta']['res']))), np.floor(np.log(model['meta']['wl_end']) / lgr) + 1) * lgr) * 10
+    if 'binning' in model['meta'] and model['meta']['binning'] != 1:
+        wl = wl[:(len(wl) // model['meta']['binning']) * model['meta']['binning']].reshape(-1, model['meta']['binning']).mean(axis = 1)
     cont, flux = model['null']['cont'], model['null']['line']
     wl = wl; cont = cont; flux = flux
     assert len(wl) == len(flux)
