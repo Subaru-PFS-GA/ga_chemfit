@@ -6,34 +6,7 @@ import shutil
 import pickle
 import time
 
-settings = {
-    'air_wl': True,
-    'min_wl': 300,
-    'max_wl': 800,
-    'res': 600000,
-    'vturb': 1.5,
-    'threshold': 0.01,
-    'abun': np.round(np.arange(-1.0, 1.01, 0.1), 1),
-    'elements': {
-        'Ba': [56, 56.01, 56.02, 56.03, 56.04, 56.05],
-        'Eu': [63, 63.01, 63.02, 63.03, 63.04, 63.05],
-        'Mg': [12, 12.01, 12.02, 12.03, 12.04, 12.05, 112.0, 812.0, 112.01, 10812.0],
-        'Si': [14, 14.01, 14.02, 14.03, 14.04, 14.05, 114.0, 814.0, 114.01, 80814.0, 101010114.0, 614.0, 60614.0],
-        'Ca': [20, 20.01, 20.02, 20.03, 20.04, 20.05, 120.0, 820.0, 120.01, 10820.0],
-        'Ti': [22, 22.01, 22.02, 22.03, 22.04, 22.05, 122.0], #, 822.0],
-        'Ni': [28, 28.01, 28.02, 28.03, 28.04, 28.05, 128.0, 828.0],
-        'Na': [11, 11.01, 11.02, 11.03, 11.04, 11.05, 111.0, 10811.0],
-        'Mn': [25, 25.01, 25.02, 25.03, 25.04, 25.05, 125.0, 825.0],
-        'Co': [27, 27.01, 27.02, 27.03, 27.04, 27.05, 127.0, 827.0],
-        'Li': [3, 3.01, 3.02, 3.03, 3.04, 3.05, 103.0],
-        'Al': [13, 13.01, 13.02, 13.03, 13.04, 13.05, 113.0, 813.0, 113.01],
-        'K': [19, 19.01, 19.02, 19.03, 19.04, 19.05, 119.0],
-    },
-    # For which elements do we want to model the effect on the lines of other elements and continuum?
-    'higher_order_impact': ['Mg', 'Si', 'Na', 'Ca', 'Al'],
-
-    'conserve_space': False,
-}
+settings = {}
 
 def build_linelist(species, output_dir, invert = False):
     # Helper function to convert Kurucz species codes into NELION index
@@ -58,21 +31,29 @@ def build_linelist(species, output_dir, invert = False):
     # Get the bit of the SYNTHE launcher script that prepares the line list
     script = atlas.templates.synthe_control
     start = script.find('# synberg.exe initializes the computation')
-    end = script.find('# synthe.exe requires the previously calculated atomic and molecular densities')
+    end = script.find('# synthe.exe computes line opacities')
     if start == -1 or end == -1:
         raise ValueError('rescalc no longer compatible with BasicATLAS')
     script = 'cd {output}\n' + script[start:end]
 
     # Run the script
+    C13 = 1 / (settings['C12C13'] + 1)
+    C12 = 1 - C13
+    C12C13 = 'echo "{} {}" > c12c13.dat'.format(np.log10(C12), np.log10(C13))
+    atoms = os.path.realpath(atlas.python_path + '/data/synthe_files/{}.dat'.format(settings['atoms']))
+    if not os.path.isfile(atoms):
+        raise ValueError('Linelist {} not found'.format(atoms))
     cards = {
         's_files': atlas.python_path + '/data/synthe_files/',
         'd_files': atlas.python_path + '/data/dfsynthe_files/',
         'synthe_suite': atlas.python_path + '/bin/',
         'airorvac': ['VAC', 'AIR'][settings['air_wl']],
-        'wlbeg': settings['min_wl'],
-        'wlend': settings['max_wl'],
+        'wlbeg': settings['wl_start'],
+        'wlend': settings['wl_end'],
         'resolu': settings['res'],
         'turbv': settings['vturb'],
+        'linelist': atoms,
+        'C12C13': C12C13,
         'ifnlte': 0,
         'linout': -1,
         'cutoff': 0.0001,
@@ -208,8 +189,8 @@ def synthesize(atmosphere, eheu, linelist, output_dir, update_opacity = [], upda
     # Retrieve the SYNTHE launcher script, except replace the synbeg calls and linelist creation with the already computed linelist
     script = atlas.templates.synthe_control
     start = script.find('# synberg.exe initializes the computation')
-    mid = script.find('# synthe.exe requires the previously calculated atomic and molecular densities')
-    end = script.find('# spectrv.exe computes the synthetic spectrum.')
+    mid = script.find('# synthe.exe computes line opacities')
+    end = script.find('# spectrv.exe computes the synthetic spectrum')
     if start == -1 or end == -1:
         raise ValueError('rescalc no longer compatible with BasicATLAS')
     script = script[:start] + '\nln -s {linelist}/fort.* ./\nrm fort.14\ncp {linelist}/fort.14 ./\n' + script[mid:end]
@@ -301,16 +282,75 @@ def compute_response(output_dir, atmosphere, linelist, elements = False):
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
 
+    if os.path.samefile(linelist, settings['linelist']):
+        raise ValueError('Cannot use the original linelist. Linelist must be copied first')
+
+    # Verify that the line list matches the settings and update vturb if needed
+    for element in os.listdir(linelist):
+        f = open('{}/{}/c12c13.dat'.format(linelist, element), 'r')
+        C12, C13 = np.array(f.read().strip().split()).astype(float)
+        f.close()
+        if np.round(10 ** C12 / 10 ** C13, 2) != np.round(settings['C12C13'], 2):
+            raise ValueError('Linelist does not match C12/C13 ratio in config')
+        f = open('{}/{}/packager.com'.format(linelist, element), 'r')
+        content = f.read()
+        f.close()
+        index = content.rfind('\n', 0, content.find('rgfalllinesnew.exe'))
+        atoms = os.path.basename(content[content.rfind('\n', 0, index) + 1:index].split()[-2])
+        if atoms != settings['atoms'] + '.dat':
+            raise ValueError('Linelist does not match atomic lines in config')
+        f = open('{}/{}/fort.93'.format(linelist, element), 'rb')
+        dt = np.dtype('i4,i4,i4,i4,i4,i4,f4,i4,i4,i4,i4,i4')
+        headers = np.fromfile(f, dtype = dt, count = 1)
+        parsed = {'vturb': headers[0][6], 'air_wl': headers[0][3] == 0}
+        dt = np.dtype('f8,f8,f8,f8,f8,f4,i4,i4')
+        headers = np.fromfile(f, dtype = dt, count = -1)
+        parsed['wl_start'] = headers[-1][0]
+        parsed['wl_end'] = headers[-1][1]
+        parsed['res'] = headers[-1][2]
+        assert headers[-1][-1] == 2848
+        f.close()
+        if parsed['wl_start'] != settings['wl_start'] or parsed['wl_end'] != settings['wl_end'] or parsed['res'] != settings['res'] or parsed['air_wl'] != settings['air_wl']:
+            raise ValueError('Linelist does not much wavelength sampling in config')
+        if parsed['vturb'] != settings['vturb']:
+            f = open('{}/{}/fort.93'.format(linelist, element), 'rb')
+            dt = np.dtype('f4,f4')
+            headers = np.fromfile(f, dtype = dt, count = -1)
+            headers[3][0] = settings['vturb']
+            f.close()
+            f = open('{}/{}/fort.93'.format(linelist, element), 'wb')
+            headers.tofile(f)
+            f.close()
+
     result = {}
 
     # Get model parameters
     result['meta'] = atlas.meta(atmosphere)
+    del result['meta']['type']
+    result['meta']['vturb_structure'] = result['meta']['vturb']
+    del result['meta']['vturb']
+    result['meta']['wl_start'] = settings['wl_start']
+    result['meta']['wl_end'] = settings['wl_end']
+    result['meta']['res'] = settings['res']
+    result['meta']['vturb_spectrum'] = settings['vturb']
+    result['meta']['airwl'] = settings['air_wl']
+    result['meta']['linelist'] = settings['atoms']
+    result['meta']['C12C13'] = settings['C12C13']
+    result['meta']['software'] = 'ATLAS9/SYNTHE'
+
+    # Get model structure
+    result['structure'] = {}
+    structure, units = atlas.read_structure(atmosphere)
+    result['structure']['values'] = structure
+    result['structure']['units'] = units
 
     # Compute the null spectrum
     synthesize(atmosphere, {}, linelist + '/null', output_dir + '/null')
     result['null'] = {}
-    result['null']['wl'], result['null']['flux'], result['null']['line'] = np.loadtxt(output_dir + '/null/synthe_1/spectrum.asc', skiprows = 2, unpack = True, usecols = [0, 1, 3])
+    result['null']['line'], result['null']['cont'] = np.loadtxt(output_dir + '/null/synthe_1/spectrum.asc', skiprows = 2, unpack = True, usecols = [3, 2])
     result['performance'] = {'null': float(np.load(output_dir + '/null/time.npy'))}
+    # To save space, we are not saving the wavelength grid. It can be recovered (in A) using
+    # wl = np.exp(np.arange(np.ceil(np.log(result['meta']['wl_start']) / (lgr := np.log(1.0 + 1.0 / result['meta']['res']))), np.floor(np.log(result['meta']['wl_end']) / lgr) + 1) * lgr) * 10
 
     abun = [0, np.min(settings['abun']), np.max(settings['abun'])]
     abun = abun + [value for value in settings['abun'] if value not in abun]
