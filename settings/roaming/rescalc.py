@@ -73,15 +73,15 @@ def read_grid_dimensions(flush_cache = False):
         f = open(model, 'rb')
         model = pickle.load(f)
         f.close()
-        grid['teff'] += [np.round(model['meta']['teff'], 3)]
-        grid['logg'] += [np.round(model['meta']['logg'], 3)]
-        grid['zscale'] += [np.round(model['meta']['zscale'], 3)]
+        grid['teff'] += [np.round(model['meta']['teff'] + 0.0, 3)]
+        grid['logg'] += [np.round(model['meta']['logg'] + 0.0, 3)]
+        grid['zscale'] += [np.round(model['meta']['zscale'] + 0.0, 3)]
         if 'Mg' in model['meta']['abun']:
-            grid['alpha'] += [np.round(model['meta']['abun']['Mg'], 3)]
+            grid['alpha'] += [np.round(model['meta']['abun']['Mg'] + 0.0, 3)]
         else:
             grid['alpha'] += [0.0]
         if 'C' in model['meta']['abun']:
-            grid['carbon'] += [np.round(model['meta']['abun']['C'], 3)]
+            grid['carbon'] += [np.round(model['meta']['abun']['C'] + 0.0, 3)]
         else:
             grid['carbon'] += [0.0]
         model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}c{:.3f}'.format(grid['teff'][-1], grid['logg'][-1], grid['zscale'][-1], grid['alpha'][-1], grid['carbon'][-1])
@@ -146,7 +146,7 @@ def read_grid_model(params, grid):
     except:
         read_grid_dimensions()
 
-    model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}c{:.3f}'.format(params['teff'], params['logg'], params['zscale'], params['alpha'], params['carbon'])
+    model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}c{:.3f}'.format(params['teff'] + 0.0, params['logg'] + 0.0, params['zscale'] + 0.0, params['alpha'] + 0.0, params['carbon'] + 0.0)
     if model_id not in __model_parameters:
         raise FileNotFoundError('Cannot locate model {}'.format(params))
 
