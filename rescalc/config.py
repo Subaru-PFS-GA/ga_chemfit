@@ -13,23 +13,16 @@ def VTURB_LOGG(logg):
     return 2.792 * np.exp(-0.241 * logg -0.118)
 
 settings = {
-    'scripts_dir': '/expanse/lustre/projects/csd835/rgerasim/ressys/low_SNR/scripts/',
-    'runs_dir': '/expanse/lustre/projects/csd835/rgerasim/ressys/low_SNR/runs/',
-
-    'sparse_sampling': {
-        'ref_teff_logg': False,
-        'pad_teff': 100,
-        'pad_logg': 0.1,
-        'sparse_teff': 5,
-        'sparse_logg': 5,
-    },
+    'scripts_dir': '/expanse/lustre/projects/csd835/rgerasim/pfsgrid/scripts/',
+    'runs_dir': '/expanse/lustre/projects/csd835/rgerasim/pfsgrid/runs/',
+    'results_dir': '/expanse/lustre/projects/csd835/rgerasim/pfsgrid/results/',
 
     'ODF': {
-        'output_dir': '/expanse/lustre/projects/csd835/rgerasim/ressys/low_SNR/ODF/',
+        'output_dir': '/expanse/lustre/projects/csd835/rgerasim/pfsgrid/ODF/',
     },
 
     'ATLAS': {
-        'output_dir': '/expanse/lustre/projects/csd835/rgerasim/ressys/low_SNR/ATLAS/',
+        'output_dir': '/expanse/lustre/projects/csd835/rgerasim/pfsgrid/ATLAS/',
         'max_flux_error': 1.0,
         'max_flux_error_derivative': 10.0,
     },
@@ -45,7 +38,7 @@ settings = {
     },
 
     'rescalc': {
-        'linelist': '/expanse/lustre/projects/csd835/rgerasim/ressys/low_SNR/linelist/',
+        'linelist': '/expanse/lustre/projects/csd835/rgerasim/pfsgrid/linelist/',
         'threshold': 0.01,
         'abun': list(np.round(np.arange(-1.0, 1.01, 0.1), 1)),
         'elements': {
@@ -70,7 +63,6 @@ settings = {
         },
         # For which elements do we want to model the effect on the lines of other elements and continuum?
         'higher_order_impact': ['Mg', 'Si', 'Na', 'Ca', 'Al'],
-        'binning': 10,
 
         'conserve_space': True,
     },
