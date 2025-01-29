@@ -1,11 +1,11 @@
 ############################################################
 #                                                          #
-#                     rescalc PRESET                       #
+#                     RESCALC PRESET                       #
 #                                                          #
 #   This preset allows chemfit to generate synthetic       #
 #   spectra including the effect of individual element     #
 #   variations using element response functions computed   #
-#   with the rescalc utility                               #
+#   with the RESCALC utility                               #
 #                                                          #
 ############################################################
 
@@ -13,6 +13,7 @@ import os, pickle
 import glob
 from astropy.io import fits
 import scipy as scp
+import zipfile
 
 settings = {
     ### Model grid settings ###
@@ -21,15 +22,19 @@ settings = {
     ### Reduce size of model cache since the models now have response functions ###
     'max_model_cache': 32,
 
-    ### Which parameters to fit? ###
+    ### Which parameters to fit? The abundances of individual elements do not need to be listed here ###
+    ### as they will be added automatically based on the available models ###
     'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'carbon', 'redshift'],
 
-    ### Virtual grid dimensions ###
+    ### Virtual grid bounds. As before, abundances of individual elements are added automatically ###
     'virtual_dof': {'redshift': [-200, 200]},
 
-    ### Default initial guesses ###
+    ### Default initial guesses. As before, abundances of individual elements are added automatically ###
     'default_initial': {'redshift': 0.0}
 }
+
+if 'model_index_file' in original_settings:
+    settings['model_index_file'] = original_settings['model_index_file']
 
 def read_grid_dimensions(flush_cache = False):
     """Determine the available dimensions in the model grid and the grid points
@@ -56,8 +61,13 @@ def read_grid_dimensions(flush_cache = False):
     global __model_parameters
     global __available_elements
 
+    if 'model_index_file' not in settings:
+        cache = settings['griddir'] + '/cache.pkl'
+    else:
+        cache = settings['model_index_file']
+
     # Apply caching
-    if os.path.isfile(cache := (settings['griddir'] + '/cache.pkl')) and (not flush_cache):
+    if ('model_index_file' in settings) or (os.path.isfile(cache) and (not flush_cache)):
         f = open(cache, 'rb')
         grid, __model_parameters, __available_elements = pickle.load(f)
         f.close()
@@ -150,9 +160,20 @@ def read_grid_model(params, grid):
     if model_id not in __model_parameters:
         raise FileNotFoundError('Cannot locate model {}'.format(params))
 
-    f = open(__model_parameters[model_id], 'rb')
-    model = pickle.load(f)
-    f.close()
+    if __model_parameters[model_id] != '/':
+        model_path = settings['griddir'] + '/' + __model_parameters[model_id]
+    else:
+        model_path = __model_parameters[model_id]
+    if (index := model_path.find('.zip/')) == -1:
+        f = open(model_path, 'rb')
+        model = pickle.load(f)
+        f.close()
+    else:
+        z = zipfile.ZipFile(model_path[:index + 4], 'r')
+        f = z.open(model_path[index + 5:])
+        model = pickle.load(f)
+        f.close()
+
     wl = np.exp(np.arange(np.ceil(np.log(model['meta']['wl_start']) / (lgr := np.log(1.0 + 1.0 / model['meta']['res']))), np.floor(np.log(model['meta']['wl_end']) / lgr) + 1) * lgr) * 10
     if 'binning' in model['meta'] and model['meta']['binning'] != 1:
         wl = wl[:(len(wl) // model['meta']['binning']) * model['meta']['binning']].reshape(-1, model['meta']['binning']).mean(axis = 1)

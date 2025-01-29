@@ -153,7 +153,7 @@ def initialize(*presets):
     ----------
     presets : tuple
         Settings presets to load. For each preset, the function will attempt to load both
-        "settings/roaming/<preset>.py" and "settings/local/<preset>.py" in that order, if available. It is
+        "settings/local/<preset>.py" and "settings/roaming/<preset>.py" in that order, if available. It is
         recommended to store global parameters in the former file (versioned) and machine-specific parameters in
         the latter file (not versioned, i.e. ignored)
     """
