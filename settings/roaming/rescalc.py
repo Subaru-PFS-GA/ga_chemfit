@@ -15,6 +15,14 @@ from astropy.io import fits
 import scipy as scp
 import zipfile
 
+
+# This is the "defective" mask that removes parts of the spectrum where the models do not match the spectra of 
+# Arcturus and the Sun well
+defective_mask = [[3800, 4000], [4006, 4012], [4065, 4075], [4093, 4110], [4140, 4165], [4170, 4180], [4205, 4220],
+                 [4285, 4300], [4335, 4345], [4375, 4387], [4700, 4715], [4775, 4790], [4855, 4865], [5055, 5065],
+                 [5145, 5160], [5203, 5213], [5885, 5900], [6355, 6365], [6555, 6570], [7175, 7195], [7890, 7900],
+                 [8320, 8330], [8490, 8505], [8530, 8555], [8650, 8672]]
+
 settings = {
     ### Model grid settings ###
     'griddir': original_settings['griddir'],    # Model directory must be specified in local settings
@@ -30,7 +38,10 @@ settings = {
     'virtual_dof': {'redshift': [-200, 200]},
 
     ### Default initial guesses. As before, abundances of individual elements are added automatically ###
-    'default_initial': {'redshift': 0.0}
+    'default_initial': {'redshift': 0.0},
+
+    ### Fitting masks ###
+    'masks': apply_standard_mask(defective_mask, original_settings['masks']),
 }
 
 if 'model_index_file' in original_settings:
@@ -45,7 +56,9 @@ def read_grid_dimensions(flush_cache = False):
     pickle files either in the top directory or subdirectories. Recursive search for
     *.pkl files will be carried out at first call
 
-    The function implements file caching
+    The function implements file caching. If an index file is provided in the settings
+    (`settings['model_index_file']`), it will be used as the cache file, and it will
+    be required to exist, such that the models are never scanned
     
     Parameters
     ----------

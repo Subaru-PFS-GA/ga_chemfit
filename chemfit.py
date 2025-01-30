@@ -137,6 +137,55 @@ def read_grid_dimensions(flush_cache = False):
     """
     raise NotImplementedError()
 
+def apply_standard_mask(exclude, original_mask = False):
+    """Helper function to extend standard masks. Primarily intended to be used in settings files
+    
+    A "standard" fitting mask does not have any arm or parameter-specific components (i.e. only
+    `settings['masks']['all']['all']` and `settings['masks']['continuum']` are populated, and the
+    continuum mask is the inverse of the `['all']['all']` mask. We also require the first included
+    interval to start at 100 A and the last included interval to end at 100000 A
+
+    This function adds additional excluded regions to an existing standard mask, or creates a new
+    standard mask from scratch if the existing (i.e. original) standard mask is not provided
+    
+    Parameters
+    ----------
+    exclude : list
+        List of intervals to exclude from the mask
+    original_mask : dict, optional
+        Original fitting mask (`settings['masks']`) or `False` to create a new mask
+    
+    Returns
+    -------
+    dict
+        Updated (or newly created) fitting mask that can be placed directly into `settings['masks']`
+    """
+    # If an original mask is provided, check that it is standard
+    if (type(original_mask) is not bool) and ((len(original_mask['all']['all']) > 0) or (len(original_mask['continuum']) > 0)):
+        if len(original_mask['all']['all']) < 1 or original_mask['all']['all'][0][0] != 100 or original_mask['all']['all'][-1][-1] != 100000:
+            raise ValueError('Cannot extend non-standard mask')
+        original_exclude = np.array(original_mask['all']['all']).flatten()[1:-1]
+        original_exclude = np.reshape(original_exclude, [len(original_exclude) // 2, 2]).tolist()
+        if len(original_exclude) != len(original_mask['continuum']) or (not np.all(original_exclude == original_mask['continuum'])):
+            raise ValueError('Cannot extend non-standard mask')
+
+    masks = {'all': {'all': []}, 'continuum': []}
+    if type(original_mask) is not bool:
+        masks['continuum'] += original_mask['continuum']
+    masks['continuum'] += list(exclude)
+    masks['continuum'].sort(key = lambda x: x[0])
+    merged = []
+    for interval in masks['continuum']:
+        if not merged or merged[-1][1] < interval[0]:
+            merged.append(interval)
+        else:
+            merged[-1][1] = max(merged[-1][1], interval[1])
+    masks['continuum'] = merged
+    masks['all']['all'] = np.concatenate([[100], np.array(masks['continuum']).flatten(), [100000]])
+    assert np.all(np.diff(masks['all']['all']) > 0)
+    masks['all']['all'] = np.reshape(masks['all']['all'], [len(masks['continuum']) + 1, 2]).tolist()
+    return masks
+
 def initialize(*presets):
     """Load the settings presets
 
@@ -163,7 +212,7 @@ def initialize(*presets):
     settings = {}
 
     # Environment variables provided to the preset scripts
-    env = {'script_dir': script_dir, 'np': np, 'original_settings': copy.deepcopy(settings), 'copy': copy, 'warn': warn}
+    env = {'script_dir': script_dir, 'np': np, 'original_settings': copy.deepcopy(settings), 'copy': copy, 'warn': warn, 'apply_standard_mask': apply_standard_mask}
 
     index = 0 # Load counter to ensure unique module names for all loaded files
     for preset in ['default'] + list(presets):

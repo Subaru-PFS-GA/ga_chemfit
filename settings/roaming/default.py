@@ -29,9 +29,9 @@ settings = {
     ### Fitting masks ###
     'masks': {
         'all': {
-            'all': [[4500., 5164.322], [5170.322, 5892.924], [5898.924, 8488.023], [8508.023, 8525.091], [8561.091, 8645.141], [8679.141, 9100.]],
+            'all': [[100, 100000]],
         },
-        'continuum': [[6864, 6935], [7591, 7694], [8938, 9100]],
+        'continuum': [],
     },
 
     'max_model_cache': 1000, # Maximum number of models allowed in memory
