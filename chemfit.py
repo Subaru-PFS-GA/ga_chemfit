@@ -160,6 +160,9 @@ def apply_standard_mask(exclude, original_mask = False):
     dict
         Updated (or newly created) fitting mask that can be placed directly into `settings['masks']`
     """
+    if np.min(exclude) <= 100 or np.max(exclude) >= 100000:
+        raise ValueError('Mask wavelengths must be 100 < wl < 100000')
+
     # If an original mask is provided, check that it is standard
     if (type(original_mask) is not bool) and ((len(original_mask['all']['all']) > 0) or (len(original_mask['continuum']) > 0)):
         if len(original_mask['all']['all']) < 1 or original_mask['all']['all'][0][0] != 100 or original_mask['all']['all'][-1][-1] != 100000:
@@ -769,7 +772,7 @@ class ModelGridInterpolator:
                 subgrid[key] = np.array([real_x[key]])
             else:
                 subgrid[key] = np.array([np.max(self._grid[key][self._grid[key] < real_x[key]]), np.min(self._grid[key][self._grid[key] > real_x[key]])])
-        required_models = set(['|'.join(np.array(model).astype(str)) for model in itertools.product(*[subgrid[key] for key in sorted(list(subgrid.keys()))])])
+        required_models = set(['|'.join((np.array(model) + 0.0).astype(str)) for model in itertools.product(*[subgrid[key] for key in sorted(list(subgrid.keys()))])])
         self.statistics['num_models_used'] += len(required_models)
 
         # Determine which of the required models have not been loaded yet
@@ -825,6 +828,18 @@ class ModelGridInterpolator:
         # change their values between accesses, we need to run preprocessing / resampling after each access
         resample_after_read = len(list(set(settings['fit_dof']) & set(settings['virtual_dof']))) == 0
 
+        # Parallelization
+        if ('parallel' in settings) and (settings['parallel'] == True):
+            request = []
+            for model in new_models:
+                params = np.array(model.split('|')).astype(float)
+                keys = sorted(list(real_x.keys()))
+                params = {keys[i]: params[i] for i in range(len(keys))}
+                params_ordered = [params[key] for key in sorted(list(subgrid.keys()))]
+                request += [params]
+            if len(request) > 1:
+                read_grid_model(request, self._grid, batch = True)
+
         # Load the new models
         for model in new_models:
             params = np.array(model.split('|')).astype(float)
@@ -847,7 +862,7 @@ class ModelGridInterpolator:
         # Build the interpolator
         subgrid_ordered = [subgrid[key] for key in sorted(list(subgrid.keys()))]
         meshgrid = np.meshgrid(*subgrid_ordered, indexing = 'ij')
-        spectra = np.vectorize(lambda *x: preprocess(self._loaded['|'.join(np.array(x).astype(str))], x, virtual_x, not resample_after_read), signature = ','.join(['()'] * len(self._grid)) + '->(n)')(*meshgrid)
+        spectra = np.vectorize(lambda *x: preprocess(self._loaded['|'.join((np.array(x) + 0.0).astype(str))], x, virtual_x, not resample_after_read), signature = ','.join(['()'] * len(self._grid)) + '->(n)')(*meshgrid)
         setattr(self, '_interpolator', scp.interpolate.RegularGridInterpolator(subgrid_ordered, spectra))
         self._interpolator_models = required_models
         self.statistics['num_interpolators_built'] += 1
