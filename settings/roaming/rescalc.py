@@ -35,7 +35,7 @@ settings = {
     'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'carbon', 'redshift'],
 
     ### Virtual grid bounds. As before, abundances of individual elements are added automatically ###
-    'virtual_dof': {'redshift': [-200, 200]},
+    'virtual_dof': {'redshift': [-300, 300]},
 
     ### Default initial guesses. As before, abundances of individual elements are added automatically ###
     'default_initial': {'redshift': 0.0},
