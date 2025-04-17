@@ -101,7 +101,7 @@ def notify(message):
         Message to print
     """
     if not settings['silent']:
-        print(message)
+        print(message, flush = True)
 
 def init_livesyn():
     """Initialize the work directory for the session
@@ -295,7 +295,6 @@ def generate_spectrum(model):
         offsets = {element: offsets[element] for element in offsets if element not in alpha_elements}
         offsets['"a"'] = alpha_offsets[0]
     notify('Calculating spectrum for {} | {}'.format(model_name, offsets))
-    notify('Structure: {}'.format(structure))
     synthesize(model_dir, structure, settings['scratch'] + '/linelist/logg_{}'.format(model['logg']), eheu)
 
     # Parse results and bin them down
