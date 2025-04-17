@@ -35,10 +35,10 @@ settings = {
     'fit_dof': ['zscale', 'alpha', 'teff', 'logg', 'carbon', 'redshift'],
 
     ### Virtual grid bounds. As before, abundances of individual elements are added automatically ###
-    'virtual_dof': {'redshift': [-300, 300]},
+    'virtual_dof': {'redshift': [-300, 300], 'redshift_correction': [-100, 100]},
 
     ### Default initial guesses. As before, abundances of individual elements are added automatically ###
-    'default_initial': {'redshift': 0.0},
+    'default_initial': {'redshift': 0.0, 'redshift_correction': 0.0},
 
     ### Fitting masks ###
     'masks': apply_standard_mask(defective_mask, original_settings['masks']),
@@ -200,7 +200,13 @@ def read_grid_model(params, grid):
         model['response'][element]['spectra'] = scp.interpolate.interp1d(model['response'][element]['abun'], model['response'][element]['spectra'] - model['response'][element]['spectra'][:,0][:,np.newaxis])
 
     # Trim the spectrum on both sides to make sure we can do redshift corrections
-    wl_range = [np.min(wl * (1 + settings['virtual_dof']['redshift'][1] * 1e3 / scp.constants.c)), np.max(wl * (1 + settings['virtual_dof']['redshift'][0] * 1e3 / scp.constants.c))]
+    shift_wl = lambda wl, redshift, redshift_correction: wl * (1 + (redshift + (wl - 10000) / 5000 * redshift_correction) * 1e3 / scp.constants.c)
+    wl_range_min = []; wl_range_max = []
+    for i in range(2):
+        for j in range(2):
+            wl_range_min += [shift_wl(np.min(wl), settings['virtual_dof']['redshift'][i], settings['virtual_dof']['redshift_correction'][j])]
+            wl_range_max += [shift_wl(np.max(wl), settings['virtual_dof']['redshift'][i], settings['virtual_dof']['redshift_correction'][j])]
+    wl_range = [np.max(wl_range_min), np.min(wl_range_max)]
     mask_left = wl < wl_range[0]; mask_right = wl > wl_range[1]; mask_in = (~mask_left) & (~mask_right)
     meta = {'left': [wl[mask_left], flux[mask_left]], 'right': [wl[mask_right], flux[mask_right]], 'response': model['response'], 'cont': cont}
 
@@ -239,7 +245,8 @@ def preprocess_grid_model(wl, flux, params, meta):
     flux_full *= meta['cont']
 
     # Apply the redshift
-    wl_redshifted = wl_full * (1 + params['redshift'] * 1e3 / scp.constants.c)
+    shift_wl = lambda wl, redshift, redshift_correction: wl * (1 + (redshift + (wl - 10000) / 5000 * redshift_correction) * 1e3 / scp.constants.c)
+    wl_redshifted = shift_wl(wl_full, params['redshift'], params['redshift_correction'])
 
     # Re-interpolate back into the original wavelength grid
     flux = np.interp(wl, wl_redshifted, flux_full)
