@@ -53,7 +53,7 @@ settings = {
         'conserve_space': True,
         'atoms': 'BasicATLAS',
         'air_wl': True,
-        'wl_start': 350,
+        'wl_start': 300,
         'wl_end': 1300,
         'res': 300000,
     },
