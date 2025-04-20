@@ -173,7 +173,7 @@ def read_grid_model(params, grid):
     if model_id not in __model_parameters:
         raise FileNotFoundError('Cannot locate model {}'.format(params))
 
-    if __model_parameters[model_id] != '/':
+    if __model_parameters[model_id][0] != '/':
         model_path = settings['griddir'] + '/' + __model_parameters[model_id]
     else:
         model_path = __model_parameters[model_id]
