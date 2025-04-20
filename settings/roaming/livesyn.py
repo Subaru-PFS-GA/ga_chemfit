@@ -17,6 +17,7 @@ import os, shutil
 import zipfile
 import sys
 import random, string
+import tempfile
 import copy
 import scipy as scp
 import concurrent.futures
@@ -51,6 +52,30 @@ settings = {
         'wl_start': 300,
         'wl_end': 1300,
         'res': 300000,
+        'threshold': 0.01,
+        'abun': list(np.round(np.arange(-1.0, 1.01, 0.1), 1)),
+        'elements': {
+           'Ba': [56, 56.01, 56.02, 56.03, 56.04, 56.05],
+           'Eu': [63, 63.01, 63.02, 63.03, 63.04, 63.05],
+           'Mg': [12, 12.01, 12.02, 12.03, 12.04, 12.05, 112.0, 812.0, 112.01, 10812.0],
+           'Si': [14, 14.01, 14.02, 14.03, 14.04, 14.05, 114.0, 814.0, 114.01, 80814.0, 101010114.0, 614.0, 60614.0],
+           'Ca': [20, 20.01, 20.02, 20.03, 20.04, 20.05, 120.0, 820.0, 120.01, 10820.0],
+           'Ti': [22, 22.01, 22.02, 22.03, 22.04, 22.05, 122.0], #, 822.0],
+           'Ni': [28, 28.01, 28.02, 28.03, 28.04, 28.05, 128.0, 828.0],
+           'Na': [11, 11.01, 11.02, 11.03, 11.04, 11.05, 111.0, 10811.0],
+           'Mn': [25, 25.01, 25.02, 25.03, 25.04, 25.05, 125.0, 825.0],
+           'Co': [27, 27.01, 27.02, 27.03, 27.04, 27.05, 127.0, 827.0],
+           'Li': [3, 3.01, 3.02, 3.03, 3.04, 3.05, 103.0],
+           'Al': [13, 13.01, 13.02, 13.03, 13.04, 13.05, 113.0, 813.0, 113.01],
+           'K': [19, 19.01, 19.02, 19.03, 19.04, 19.05, 119.0],
+           'Cr': [24, 24.01, 24.02, 24.03, 24.04, 24.05, 124.0, 824.0],
+           'La': [57, 57.01, 57.02, 57.03, 57.04, 57.05, 857.0],
+           'Sc': [21, 21.01, 21.02, 21.03, 21.04, 21.05, 121.0, 821.0],
+           'V': [23, 23.01, 23.02, 23.03, 23.04, 23.05, 123.0, 823.0],
+           'Y': [39, 39.01, 39.02, 39.03, 39.04, 39.05, 839.0],
+        },
+        'higher_order_impact': ['Mg', 'Si', 'Na', 'Ca', 'Al'],
+        'conserve_space': True,
     },
 
     ### Work directory name for this session. `False` to randomize ###
@@ -408,7 +433,7 @@ def synthesize(output, structure, linelist, eheu):
     # Run spectral synthesis
     rescalc.synthesize(output, eheu, linelist, output + '/model')
 
-def generate_spectrum(model):
+def generate_spectrum(model, run_synthesis = True, return_abun = False):
     global livesyn_workdir
 
     # Do not include O in live synthesis alpha
@@ -422,8 +447,14 @@ def generate_spectrum(model):
         if element not in eheu:
             eheu[element] = 0
         eheu[element] += model['live_{}'.format(element)]
+    if return_abun: return eheu
     eheu = {element: np.round(eheu[element], 2) for element in eheu}
     structure, penalty, offsets = select_structure(model['teff'], model['logg'], model['zscale'], eheu)
+
+    # If no synthesis is required, provide the setup instead
+    if not run_synthesis:
+        return structure, penalty, offsets
+
     model_name = 't{teff:.2f}_g{logg:.2f}_z{zscale:.2f}_a{alpha:.2f}'.format(**model)
     for element in settings['elements']:
         model_name += '_{}{:.2f}'.format(element, model['live_{}'.format(element)])
@@ -532,3 +563,118 @@ settings['fit_dof'] = settings['fit_dof'] + ['live_{}'.format(element) for eleme
 
 # Provide default initial guesses for live synthesis elements
 settings['default_initial'] = {**settings['default_initial'], **{'live_{}'.format(element): np.round((settings['elements'][element][0] + settings['elements'][element][1]) / 2.0, 2) for element in settings['elements']}}
+
+def generate_structure(structure, pradk, header, footer, model):
+    # Determine where the current abundances are in the structure file and parse them so we can recycle the helium mass fraction
+    abun_start = header.find('ABUNDANCE SCALE')
+    abun_end = header.find('\n', header.rfind('ABUNDANCE CHANGE'))
+    tmp = tempfile.NamedTemporaryFile(mode = 'w+', delete = True)
+    tmp.write(header)
+    tmp.flush()
+    abun = rescalc.atlas.parse_atlas_abundances(tmp.name, params = ['ABUNDANCE SCALE'], lookbehind = 2)
+    tmp.close()
+    abun = rescalc.atlas.Settings().abun_atlas_to_std(abun[0], np.log10(abun[1]['ABUNDANCE SCALE']))
+
+    # Generate new abundances that match the spectral model
+    new_abun = rescalc.atlas.Settings().abun_std_to_atlas(Y = abun['Y'], zscale = model['zscale'], abun = generate_spectrum(model, return_abun = True))
+    template = rescalc.atlas.templates.atlas_control
+    template = template[template.find('ABUNDANCE SCALE'):template.find('\n', template.find('ABUNDANCE CHANGE 99'))]
+    sub = {'element_{}'.format(i): new_abun[i] for i in range(1, 100)}
+    new_abun = template.format(abundance_scale = 10 ** model['zscale'], **sub)
+    header = header[:abun_start] + new_abun + header[abun_end:]
+
+    # Replace temperature and gravity with the model values
+    header = header[header.find('\n', header.find('TEFF')):]
+    header = 'TEFF {:7.0f}  GRAVITY{:8.5f}'.format(model['teff'], model['logg']) + header
+
+    # Replace the structure with the provided table
+    output = header + '\n'
+    fmt = '{:15.8E}{:9.1f}' + '{:10.3E}' * 8 + '\n'
+    for line in structure:
+        output += fmt.format(*line)
+    output += 'PRADK{:11.4E}\n'.format(pradk)
+    output += footer
+
+    return output
+
+def public__generate_response_functions(model):
+    # Determine which teff and logg we will be interpolating the model structure from
+    grid = read_grid_dimensions()
+    if model['teff'] in grid['teff']:
+        teff_low = model['teff']; teff_high = model['teff']
+    else:
+        teff_low = np.max(grid['teff'][grid['teff'] < model['teff']])
+        teff_high = np.min(grid['teff'][grid['teff'] > model['teff']])
+    if model['logg'] in grid['logg']:
+        logg_low = model['logg']; logg_high = model['logg']
+    else:
+        logg_low = np.max(grid['logg'][grid['logg'] < model['logg']])
+        logg_high = np.min(grid['logg'][grid['logg'] > model['logg']])
+
+    # Carry out the interpolation
+    notify('Building an interpolated structure from:')
+    structures = [[None, None], [None, None]]
+    pradk = [[None, None], [None, None]]
+    last_iteration = [[None, None], [None, None]]
+    for i, teff in enumerate([teff_low, teff_high]):
+        for j, logg in enumerate([logg_low, logg_high]):
+            params = copy.deepcopy(model)
+            params['teff'] = teff; params['logg'] = logg
+            structure, penalty, offsets = generate_spectrum(params, run_synthesis = False)
+            notify('  {}:{} {} (penalty: {:.1f})'.format(i, j, structure, penalty))
+            z = zipfile.ZipFile(settings['structures_dir'] + '/' + structure[:structure.find('/')], 'r')
+            structure_file = [filename for filename in z.namelist() if filename.startswith(structure[structure.find('/') + 1:]) and filename.endswith('output_summary.out')][0]
+            last_iteration_file = [filename for filename in z.namelist() if filename.startswith(structure[structure.find('/') + 1:]) and filename.endswith('output_last_iteration.out')][0]
+            data = z.read(structure_file).decode()
+            data = data.split('\n')
+            last_iteration[i][j] = np.loadtxt(z.read(last_iteration_file).decode().split('\n'))
+            start = np.where(np.char.find(data, 'READ DECK') == 0)[0][0] + 1
+            end = np.where(np.char.find(data, 'PRADK') == 0)[0][0]
+            structures[i][j] = np.loadtxt(data[start:end])
+            pradk[i][j] = float(data[end].split()[-1])
+            header = '\n'.join(data[:start])
+            footer = '\n'.join(data[end + 1:])
+            z.close()
+    pradk = scp.interpolate.RegularGridInterpolator([[teff_low, teff_high], [logg_low, logg_high]], pradk)([model['teff'], model['logg']])[0]
+    structure = scp.interpolate.RegularGridInterpolator([[teff_low, teff_high], [logg_low, logg_high]], structures)([model['teff'], model['logg']])[0]
+    last_iteration = scp.interpolate.RegularGridInterpolator([[teff_low, teff_high], [logg_low, logg_high]], last_iteration)([model['teff'], model['logg']])[0]
+    structure = generate_structure(structure, pradk, header, footer, model)
+
+    # Save the interpolated model structure
+    model_dir = '{}/penalty_{}/'.format(settings['scratch'], ''.join(random.choices(string.ascii_letters + string.digits, k = 20)))
+    os.mkdir(model_dir)
+    f = open('{}/output_summary.out'.format(model_dir), 'w')
+    f.write(structure)
+    f.close()
+    f = open('{}/output_main.out'.format(model_dir), 'w')
+    f.close()
+    np.savetxt('{}/output_last_iteration.out'.format(model_dir), last_iteration)
+
+    # Compute a test spectrum to determine the flux error penalty
+    notify('Running a penalty test in {}'.format(model_dir))
+    rescalc.atlas.synthe(model_dir, 100, 12000, 300000, progress = False, silent = True)
+    spectrum = rescalc.atlas.read_spectrum(model_dir)
+    teff = (np.trapz(spectrum['flux'] * np.pi, spectrum['wl']) / (scp.constants.sigma * 1e3)) ** 0.25
+    penalty = teff - model['teff']
+    notify('Estimated penalty: {:.1f} K'.format(penalty))
+
+    # Generate the line list for this model
+    linelist_dir = '{}/linelist_{}/'.format(settings['scratch'], ''.join(random.choices(string.ascii_letters + string.digits, k = 20)))
+    notify('Building a line list in {}'.format(linelist_dir))
+    rescalc.settings = {
+        **settings['rescalc'],
+        'C12C13': np.round(C12C13_kirby_2015(model['logg']), 2),
+        'vturb': np.round(VTURB_LOGG(model['logg']), 2),
+        'linelist': linelist_dir,
+    }
+    rescalc.build_all_linelists(linelist_dir)
+    notify('Linelist for logg={:.2f} | C12C13={:.2f} | VTURB={:.2f} done'.format(logg, rescalc.settings['C12C13'], rescalc.settings['vturb']))
+
+    # Generate response functions
+    output = '{}/response_{}/'.format(settings['scratch'], ''.join(random.choices(string.ascii_letters + string.digits, k = 20)))
+    notify('Generating response functions in {}'.format(output))
+    linelist_dir_copy = linelist_dir.replace('linelist_', 'linelist_copy_')
+    shutil.copytree(linelist_dir, linelist_dir_copy)
+    rescalc.compute_response(output, model_dir, linelist_dir_copy)
+
+    return output, linelist_dir, penalty
