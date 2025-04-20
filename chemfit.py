@@ -250,6 +250,12 @@ def initialize(*presets):
                 preprocess_grid_model = module.preprocess_grid_model
             except:
                 pass
+
+            # See if the configuration file has public functions that need to be exposed to the user
+            public_functions = [name for name in dir(module) if name.startswith(prefix := 'public__')]
+            for name in public_functions:
+                globals()[name[len(prefix):]] = getattr(module, name)
+
 # Load the default settings preset
 initialize()
 
