@@ -1296,7 +1296,7 @@ def fit_mcmc(f, x, y, p0, sigma, bounds):
     chain = sampler.get_chain(flat = False)
     autocorr, geweke = mcmc_convergence(chain)
     flatchain = chain[settings['mcmc']['discard']:,:,:].reshape((chain.shape[0] - settings['mcmc']['discard']) * chain.shape[1], -1)
-    extra = {'chain': chain, 'initial': initial, 'autocorr': autocorr, 'geweke': geweke}
+    extra = {'chain': chain, 'log_prob': sampler.get_log_prob(), 'initial': initial, 'autocorr': autocorr, 'geweke': geweke}
     if settings['mcmc']['initial'] == 'gradient_descent':
         extra['gradient_descent'] = extra_gd
         extra['gradient_descent']['fit'] = best
