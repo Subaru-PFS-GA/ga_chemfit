@@ -91,7 +91,7 @@ def read_grid_dimensions(flush_cache = False):
     __available_elements = {}
 
     # Extract the parameters of all available models
-    models = glob.glob(settings['griddir'] + '/*.pkl') + glob.glob(settings['griddir'] + '/**/*.pkl', recursive = True)
+    models = np.unique(glob.glob(settings['griddir'] + '/*.pkl') + glob.glob(settings['griddir'] + '/**/*.pkl', recursive = True))
     for i, model in enumerate(models):
         f = open(model, 'rb')
         model = pickle.load(f)
@@ -108,6 +108,8 @@ def read_grid_dimensions(flush_cache = False):
         else:
             grid['carbon'] += [0.0]
         model_id = 't{:.3f}l{:.3f}z{:.3f}a{:.3f}c{:.3f}'.format(grid['teff'][-1], grid['logg'][-1], grid['zscale'][-1], grid['alpha'][-1], grid['carbon'][-1])
+        if model_id in __model_parameters:
+            raise ValueError('Two models with identical parameters ({}) found: {} and {}'.format(model_id, __model_parameters[model_id], models[i]))
         __model_parameters[model_id] = models[i]
 
         for element in model['response']:
@@ -121,6 +123,7 @@ def read_grid_dimensions(flush_cache = False):
     f = open(cache, 'wb')
     pickle.dump((grid, __model_parameters, __available_elements), f)
     f.close()
+
     return grid
 
 # Add available element responses to settings
