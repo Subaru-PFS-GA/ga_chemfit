@@ -275,7 +275,7 @@ def build_all_linelists(output_dir, elements = False):
     # Build the null (all-inclusive) line list as well
     build_linelist([], output_dir + '/null', invert = True)
 
-def compute_response(output_dir, atmosphere, linelist, elements = False):
+def compute_response(output_dir, atmosphere, linelist, elements = False, silent = True):
     if type(elements) == bool:
         elements = list(settings['elements'].keys())
 
@@ -349,6 +349,7 @@ def compute_response(output_dir, atmosphere, linelist, elements = False):
     result['null'] = {}
     result['null']['line'], result['null']['cont'] = np.loadtxt(output_dir + '/null/synthe_1/spectrum.asc', skiprows = 2, unpack = True, usecols = [3, 2])
     result['performance'] = {'null': float(np.load(output_dir + '/null/time.npy'))}
+    if not silent: print('Computed null spectrum', flush = True)
     # To save space, we are not saving the wavelength grid. It can be recovered (in A) using
     # wl = np.exp(np.arange(np.ceil(np.log(result['meta']['wl_start']) / (lgr := np.log(1.0 + 1.0 / result['meta']['res']))), np.floor(np.log(result['meta']['wl_end']) / lgr) + 1) * lgr) * 10
 
@@ -395,6 +396,7 @@ def compute_response(output_dir, atmosphere, linelist, elements = False):
             result['performance'][element] += np.load(output_dir + '/{}_{}/time.npy'.format(element, value))
             result['response'][element]['abun'] += [value]
             result['response'][element]['spectra'] += [np.loadtxt(output_dir + '/{}_{}/synthe_1/spectrum.asc'.format(element, value), skiprows = 2, unpack = True, usecols = [3])]
+            if not silent: print('Computed {}={}'.format(element, value), flush = True)
         for i in range(len(result['response'][element]['spectra'])):
             result['response'][element]['spectra'][i] = result['response'][element]['spectra'][i][result['response'][element]['mask']]
         result['response'][element]['spectra'] = np.array(result['response'][element]['spectra']).T

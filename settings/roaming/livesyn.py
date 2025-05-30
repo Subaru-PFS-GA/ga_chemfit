@@ -53,7 +53,7 @@ settings = {
         'wl_end': 1300,
         'res': 300000,
         'threshold': 0.01,
-        'abun': list(np.round(np.arange(-1.0, 1.01, 0.1), 1)),
+        'abun': list(np.round(np.arange(-2.0, 2.01, 0.1), 1)),
         'elements': {
            'Ba': [56, 56.01, 56.02, 56.03, 56.04, 56.05],
            'Eu': [63, 63.01, 63.02, 63.03, 63.04, 63.05],
@@ -675,6 +675,6 @@ def public__generate_response_functions(model):
     notify('Generating response functions in {}'.format(output))
     linelist_dir_copy = linelist_dir.replace('linelist_', 'linelist_copy_')
     shutil.copytree(linelist_dir, linelist_dir_copy)
-    rescalc.compute_response(output, model_dir, linelist_dir_copy)
+    rescalc.compute_response(output, model_dir, linelist_dir_copy, silent = settings['silent'])
 
     return output, linelist_dir, penalty
