@@ -1,4 +1,9 @@
-# # From GaiaEDR3_passbands_zeropoints_version2, https://www.cosmos.esa.int/web/gaia/edr3-passbands
+# Gaia (E)DR3
+# Blue Photometer (BP)
+# 
+# Downloaded from https://www.cosmos.esa.int/web/gaia/edr3-passbands on 07/24/2025
+# 
+# WAVELENGTH [A] | TRANSMISSION
 3.250000000000000000e+03 3.870541159999999679e-05
 3.260000000000000000e+03 1.757719839999999931e-04
 3.270000000000000000e+03 6.494854159999999569e-04

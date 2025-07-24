@@ -1,4 +1,9 @@
-# # From GaiaEDR3_passbands_zeropoints_version2, https://www.cosmos.esa.int/web/gaia/edr3-passbands
+# Gaia (E)DR3
+# Red Photometer (RP)
+# 
+# Downloaded from https://www.cosmos.esa.int/web/gaia/edr3-passbands on 07/24/2025
+# 
+# WAVELENGTH [A] | TRANSMISSION
 6.100000000000000000e+03 1.066812210000000019e-04
 6.110000000000000000e+03 1.498279319999999898e-04
 6.120000000000000000e+03 2.164891509999999865e-04
